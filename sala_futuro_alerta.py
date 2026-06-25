@@ -273,12 +273,38 @@ def listar_atividades_pendentes(page: Page) -> list:
         linhas = [l.strip() for l in corpo.split("\n") if l.strip()]
         log.info("Total de linhas no texto: %d", len(linhas))
 
+        # Localiza o fim da secao de filtros (Turmas/Status/Componente)
+        # As tarefas aparecem APOS esses filtros na estrutura da pagina
+        marcos_filtro = {"turmas:", "status", "componente", "a fazer", "todas as turmas"}
+        ultimo_filtro = -1
         for i, linha in enumerate(linhas):
-            if linha == "A Fazer" and i + 1 < len(linhas):
-                nome = linhas[i + 1]
-                if _e_titulo_valido(nome):
-                    atividades.append({"titulo": nome, "url": URL_TAREFAS,
+            if linha.lower() in marcos_filtro:
+                ultimo_filtro = i
+
+        # Itens de navegacao conhecidos para ignorar apos os filtros
+        nav_conhecida = {
+            "sobre", "suporte", "ouvidoria", "termos de uso",
+            "politica de privacidade", "central de atendimento",
+            "portal de atendimento", "apps"
+        }
+
+        if ultimo_filtro >= 0:
+            log.info("Secao de filtros termina na linha %d. Buscando tarefas apos ela.", ultimo_filtro)
+            for linha in linhas[ultimo_filtro + 1:]:
+                t = _normalizar_titulo(linha)
+                if t in nav_conhecida:
+                    break  # chegou no rodape, para
+                if _e_titulo_valido(linha):
+                    atividades.append({"titulo": linha, "url": URL_TAREFAS,
                                        "disciplina": "", "prazo": ""})
+        else:
+            # Fallback antigo: busca apos "A Fazer"
+            for i, linha in enumerate(linhas):
+                if linha == "A Fazer" and i + 1 < len(linhas):
+                    nome = linhas[i + 1]
+                    if _e_titulo_valido(nome):
+                        atividades.append({"titulo": nome, "url": URL_TAREFAS,
+                                           "disciplina": "", "prazo": ""})
 
     vistos: set = set()
     resultado = []
