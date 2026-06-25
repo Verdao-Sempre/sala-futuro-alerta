@@ -197,19 +197,32 @@ def filtrar_conteudo(texto_bruto, nome_atividade=""):
 
 
 def responder_com_ia(conteudo_atividade, nome_atividade):
-    """Envia o conteudo da atividade para o GPT e retorna as respostas."""
+    """Envia o conteudo da atividade para o GPT e retorna SOMENTE as respostas."""
     if not OPENAI_API_KEY:
+        print("  -> OPENAI_API_KEY nao configurada!")
+        enviar_telegram("Aviso: OPENAI_API_KEY nao configurada no GitHub Secrets.")
         return None
 
-    print("  -> Enviando para GPT...")
-    prompt = f"""Voce e um assistente que ajuda estudantes do ensino medio brasileiro.
-Abaixo esta o conteudo completo de uma atividade escolar chamada "{nome_atividade}".
-Leia com atencao e responda CADA QUESTAO de forma direta e objetiva.
-Para cada questao, indique qual alternativa esta correta (A, B, C, D ou E) e explique brevemente o motivo.
-Se for questao discursiva, escreva uma resposta modelo curta e clara.
-Seja objetivo — o aluno quer saber as respostas rapidamente.
+    print(f"  -> Enviando para GPT... (chave: {OPENAI_API_KEY[:8]}...)")
 
-CONTEUDO DA ATIVIDADE:
+    prompt = f"""Voce e um assistente que ajuda estudantes do ensino medio brasileiro.
+Abaixo esta o conteudo de uma atividade escolar. Responda APENAS as questoes, sem repetir o enunciado.
+
+Formato de resposta:
+Q01: [resposta direta - letra ou texto curto]
+Motivo: [explicacao breve em 1-2 linhas]
+
+Q02: [resposta direta]
+Motivo: [explicacao breve]
+
+... e assim por diante para cada questao.
+
+Para questoes de completar lacunas, indique as palavras corretas.
+Para multipla escolha, indique a letra correta.
+Para questao discursiva, escreva resposta modelo em 2-3 linhas.
+Seja objetivo e direto. NAO repita as questoes, apenas as respostas.
+
+CONTEUDO DA ATIVIDADE "{nome_atividade}":
 {conteudo_atividade[:6000]}
 """
 
@@ -227,15 +240,19 @@ CONTEUDO DA ATIVIDADE:
             },
             timeout=60
         )
+        print(f"  -> GPT status: {resp.status_code}")
         if resp.status_code == 200:
             resposta = resp.json()["choices"][0]["message"]["content"]
             print("  -> GPT respondeu!")
             return resposta
         else:
-            print(f"  -> Erro GPT: {resp.status_code} - {resp.text[:200]}")
+            erro = resp.text[:300]
+            print(f"  -> Erro GPT: {resp.status_code} - {erro}")
+            enviar_telegram(f"Erro na API do GPT: {resp.status_code}\n{erro}")
             return None
     except Exception as e:
         print(f"  -> Falha no GPT: {e}")
+        enviar_telegram(f"Falha ao chamar GPT: {e}")
         return None
 
 def enviar_telegram(mensagem):
@@ -315,17 +332,13 @@ def main():
                         resposta_ia = responder_com_ia(conteudo_limpo, nome)
 
                         if resposta_ia:
-                            mensagem_final = (
-                                f"Atividade: {nome}\n"
-                                f"Link: {url_atv}\n\n"
-                                f"--- Respostas da IA ---\n\n"
-                                f"{resposta_ia}"
-                            )
-                            enviar_telegram_longo("", [mensagem_final])
+                            cabecalho = f"Atividade: {nome}\nLink: {url_atv}\n\n--- Respostas do GPT ---\n"
+                            enviar_telegram_longo(cabecalho, resposta_ia.split("\n"))
                         else:
-                            # Sem IA: envia conteudo normal
-                            titulo_msg = f"Atividade: {nome}\nLink: {url_atv}\n\n--- Conteudo ---"
-                            enviar_telegram_longo(titulo_msg, linhas_filtradas)
+                            enviar_telegram(
+                                f"Atividade: {nome}\nLink: {url_atv}\n\n"
+                                f"(GPT nao respondeu — acesse o link para ver as questoes)"
+                            )
                     else:
                         enviar_telegram(
                             f"Atividade: {nome}\n\n"
