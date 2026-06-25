@@ -293,11 +293,11 @@ Tipos:
 - dropdown: preencher lacunas - use EXATAMENTE os termos das opcoes listadas abaixo
 
 {opcoes_info}CONTEUDO "{nome_atividade}":
-{conteudo_atividade[:5000]}
+{conteudo_atividade[:3000]}
 
 JSON:"""
 
-    resposta = chamar_groq(prompt, max_tokens=1024, temperature=0.1)
+    resposta = chamar_groq(prompt, max_tokens=2000, temperature=0.1)
     if not resposta:
         return None
 
@@ -673,6 +673,7 @@ def main():
                                 rascunho_salvo = salvar_rascunho_pagina(page)
 
                         # Passo 2: Respostas em texto para Telegram
+                        time.sleep(8)  # evita rate limit TPM do Groq
                         resposta_ia = responder_com_ia(conteudo_limpo, nome)
 
                         # Status do auto-responder
