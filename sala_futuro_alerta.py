@@ -110,12 +110,28 @@ def fazer_login(page: Page, config: dict) -> None:
 
 # --- 3. Aguardar carregamento da SPA ---
 def _aguardar_pagina_estavel(page: Page, minimo_chars: int = 300, tentativas: int = 6) -> None:
-    """Aguarda o texto da pagina parar de crescer (SPA terminou de renderizar)."""
+    """
+    Aguarda a SPA terminar de renderizar.
+    Estrategia: tenta esperar por MuiCard (cards de tarefa) primeiro.
+    Se nao aparecer em 10s, espera o texto estabilizar com minimo maior.
+    """
+    # Espera minima para o React montar os componentes
+    page.wait_for_timeout(2000)
     page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(800)
+    page.wait_for_timeout(500)
     page.evaluate("window.scrollTo(0, 0)")
-    page.wait_for_timeout(800)
+    page.wait_for_timeout(500)
 
+    # Tenta aguardar por um card MUI (indica que as tarefas carregaram)
+    try:
+        page.wait_for_selector("[class*='MuiCard-root']", timeout=10_000)
+        log.info("MuiCard detectado — tarefas carregadas.")
+        return
+    except PlaywrightTimeout:
+        log.info("Nenhum MuiCard em 10s. Verificando estabilidade do texto...")
+
+    # Fallback: aguarda texto estabilizar acima do minimo
+    # A navegacao sozinha tem ~600 chars; com tarefas deve passar de 800
     anterior = 0
     for _ in range(tentativas):
         atual = page.evaluate("document.body.innerText.length")
