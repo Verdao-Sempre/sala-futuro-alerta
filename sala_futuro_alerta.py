@@ -16,7 +16,7 @@ SENHA            = os.environ.get("SENHA",            "mj13112008")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
+GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 ARQUIVO_ATIVIDADES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atividades_salvas.json")
 
@@ -198,12 +198,12 @@ def filtrar_conteudo(texto_bruto, nome_atividade=""):
 
 def responder_com_ia(conteudo_atividade, nome_atividade):
     """Envia o conteudo da atividade para o GPT e retorna SOMENTE as respostas."""
-    if not OPENAI_API_KEY:
-        print("  -> OPENAI_API_KEY nao configurada!")
-        enviar_telegram("Aviso: OPENAI_API_KEY nao configurada no GitHub Secrets.")
+    if not GROQ_API_KEY:
+        print("  -> GROQ_API_KEY nao configurada!")
+        enviar_telegram("Aviso: GROQ_API_KEY nao configurada no GitHub Secrets.")
         return None
 
-    print(f"  -> Enviando para GPT... (chave: {OPENAI_API_KEY[:8]}...)")
+    print(f"  -> Enviando para GPT... (chave: {GROQ_API_KEY[:8]}...)")
 
     prompt = f"""Voce e um assistente que ajuda estudantes do ensino medio brasileiro.
 Abaixo esta o conteudo de uma atividade escolar. Responda APENAS as questoes, sem repetir o enunciado.
@@ -228,13 +228,13 @@ CONTEUDO DA ATIVIDADE "{nome_atividade}":
 
     try:
         resp = requests.post(
-            "https://api.openai.com/v1/chat/completions",
+            "https://api.groq.com/openai/v1/chat/completions",
             headers={
-                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Authorization": f"Bearer {GROQ_API_KEY}",
                 "Content-Type": "application/json"
             },
             json={
-                "model": "gpt-4o-mini",
+                "model": "llama-3.1-8b-instant",
                 "max_tokens": 2048,
                 "messages": [{"role": "user", "content": prompt}]
             },
