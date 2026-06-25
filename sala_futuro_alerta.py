@@ -56,13 +56,20 @@ def fazer_login(page):
     time.sleep(1)
     page.get_by_role("button", name="Acessar").click()
     time.sleep(5)
-    print("  -> Login realizado!")
+    # Verificar se login funcionou
+    url_atual = page.url
+    print(f"  -> Login realizado! URL: {url_atual}")
+    time.sleep(3)
+    url_pos = page.url
+    print(f"  -> URL apos espera: {url_pos}")
 
 
 def buscar_atividades(page):
     print("  -> Verificando tarefas...")
     page.goto("https://saladofuturo.educacao.sp.gov.br/tarefas", wait_until="domcontentloaded")
-    time.sleep(4)
+    time.sleep(5)
+    url_tarefas = page.url
+    print(f"  -> URL da pagina de tarefas: {url_tarefas}")
     for _ in range(3):
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         time.sleep(1)
@@ -72,6 +79,9 @@ def buscar_atividades(page):
     corpo = page.inner_text("body")
     linhas = [l.strip() for l in corpo.split("\n") if l.strip()]
     print(f"  -> Total de linhas na pagina: {len(linhas)}")
+    # Mostra primeiras 5 linhas para diagnostico rapido
+    for i in range(min(5, len(linhas))):
+        print(f"  -> L{i}: {repr(linhas[i])}")
 
     atividades = []
     # Todos os status possiveis de tarefas em aberto
