@@ -275,7 +275,7 @@ Retorne SOMENTE JSON valido, sem markdown, sem texto extra:
 {{
   "1": {{"tipo": "multipla_escolha", "respostas": ["B", "D"]}},
   "2": {{"tipo": "unica_escolha", "respostas": ["C"]}},
-  "3": {{"tipo": "dropdown", "respostas": ["nao vazia", "vazia", "mutuamente excludentes"]}}
+  "3": {{"tipo": "dropdown", "respostas": ["opcao A", "opcao B", "opcao C"]}}
 }}
 
 Tipos:
@@ -445,7 +445,7 @@ def clicar_dropdown(page, indice, termo):
                     const texto = (el.innerText || el.textContent || "").trim();
                     if (!texto) continue;
                     const tn = norm(texto);
-                    if (tn === termoNorm || tn.includes(termoNorm) || termoNorm.includes(tn)) {
+                    if (tn === termoNorm || termoNorm.includes(tn)) {
                         el.click();
                         return texto;
                     }
