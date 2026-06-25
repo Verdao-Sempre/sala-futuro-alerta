@@ -83,6 +83,16 @@ def buscar_atividades(page):
                 atividades.append(nome)
 
     print(f"  -> {len(atividades)} tarefa(s) em aberto: {atividades}")
+
+    # Se nao achou nada, envia debug pelo Telegram
+    if len(atividades) == 0:
+        linhas_aFazer = [f"linha {i}: '{linhas[i]}' -> '{linhas[i+1] if i+1<len(linhas) else ''}'" 
+                         for i, l in enumerate(linhas) if "fazer" in l.lower() or "tarefa" in l.lower()]
+        debug_msg = f"DEBUG: 0 atividades encontradas.\nTotal linhas: {len(linhas)}\n\nLinhas com 'fazer'/'tarefa':\n"
+        debug_msg += "\n".join(linhas_aFazer[:20]) or "(nenhuma)"
+        debug_msg += "\n\nPrimeiras 30 linhas:\n" + "\n".join(linhas[:30])
+        enviar_telegram(debug_msg)
+
     return atividades
 
 
