@@ -187,14 +187,17 @@ def listar_atividades_pendentes(page: Page) -> list:
     # Seletores MUI para cards de tarefa.
     # MuiMenuItem-root sao itens de NAVEGACAO — excluir.
     # Cards de tarefa serao MuiCard, MuiPaper ou MuiListItem sem ser MenuItem.
+    # Seletores MUI para cards de tarefa.
+    # MuiMenuItem-root = navegacao lateral (excluir).
+    # MuiPaper-elevation foi removido — era generico demais e capturava o botao de perfil.
     seletores_card = [
         "[class*='MuiCard-root']",
         "[class*='MuiPaper-root'][class*='MuiCard']",
         "li[class*='MuiListItem-root']:not([class*='MuiMenuItem-root'])",
-        "div[class*='MuiListItem-root']",
-        "[class*='MuiPaper-elevation']",
+        "div[class*='MuiListItem-root']:not([class*='MuiMenuItem-root'])",
         "[class*='task-card']",
         "[class*='tarefa-card']",
+        "[class*='activity-card']",
     ]
 
     cards_encontrados = []
@@ -213,6 +216,11 @@ def listar_atividades_pendentes(page: Page) -> list:
             try:
                 texto = card.inner_text().strip()
                 linhas = [l.strip() for l in texto.split("\n") if l.strip()]
+                # Card valido precisa de pelo menos 2 linhas de conteudo
+                # (titulo + disciplina ou prazo). Evita capturar botao de perfil.
+                if len(linhas) < 2:
+                    log.debug("Card ignorado (poucas linhas): %r", linhas)
+                    continue
                 titulo = next((l for l in linhas if _e_titulo_valido(l)), "")
                 if not titulo:
                     continue
