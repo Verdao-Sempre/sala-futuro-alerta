@@ -9,6 +9,7 @@ import json
 import hashlib
 import logging
 import sys
+import unicodedata
 from datetime import datetime
 import requests
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeout
@@ -31,7 +32,8 @@ ENVIAR_OK      = os.environ.get("ENVIAR_OK", "false").lower() == "true"
 IS_CLOUD       = os.environ.get("GITHUB_ACTIONS") == "true"
 MODO_DEBUG     = os.environ.get("MODO_DEBUG", "false").lower() == "true"
 
-TITULOS_IGNORAR = {
+# Textos que sao itens de navegacao, filtros ou rodape — nunca titulos de tarefa
+NAV_IGNORAR = {
     "tarefa sp", "home", "status", "a fazer", "componente", "turmas",
     "entregar", "tarefas", "atividades", "menu", "inicio", "voltar",
     "redacao paulista", "provas", "avaliacao diagnostica", "presenca",
@@ -39,8 +41,29 @@ TITULOS_IGNORAR = {
     "minhas conquistas", "copa da escola", "configuracoes", "sair da conta",
     "plataformas de aprendizagem", "materiais digitais", "inscricao aulas olimpicas",
     "portal de atendimento", "suporte", "ouvidoria", "termos de uso",
-    "politica de privacidade", "sobre"
+    "politica de privacidade", "sobre", "todas as turmas", "central de atendimento",
+    "apps", "prosseguir", "prosseguir para a tarefa", "cancelar", "fechar",
+    "voltar para tarefas"
 }
+
+
+# --- Utilidades ---
+def _remover_acentos(texto: str) -> str:
+    s = unicodedata.normalize("NFD", texto.lower())
+    return "".join(c for c in s if unicodedata.category(c) != "Mn")
+
+
+def _e_titulo_valido(titulo: str) -> bool:
+    t = _remover_acentos(titulo.strip())
+    if len(t) < 4:
+        return False
+    if t in NAV_IGNORAR:
+        return False
+    if any(nav in t for nav in NAV_IGNORAR):
+        return False
+    if re.fullmatch(r'[\d/\-\s:.,]+', t):
+        return False
+    return True
 
 
 # --- 1. Variaveis obrigatorias ---
@@ -61,82 +84,7 @@ def carregar_variaveis() -> dict:
     return config
 
 
-def _normalizar_titulo(titulo: str) -> str:
-    import unicodedata
-    s = unicodedata.normalize("NFD", titulo.lower())
-    return "".join(c for c in s if unicodedata.category(c) != "Mn")
-
-
-def _e_titulo_valido(titulo: str) -> bool:
-    t = _normalizar_titulo(titulo.strip())
-    if len(t) < 4:
-        return False
-    if t in TITULOS_IGNORAR:
-        return False
-    if any(ignorar in t for ignorar in TITULOS_IGNORAR):
-        return False
-    if re.fullmatch(r'[\d/\-\s:]+', t):
-        return False
-    return True
-
-
-def _normalizar_url(href: str) -> str:
-    if not href:
-        return ""
-    if href.startswith("http"):
-        return href
-    return f"https://saladofuturo.educacao.sp.gov.br{href}"
-
-
-def _e_url_especifica(url: str) -> bool:
-    return bool(url) and url.rstrip("/") != URL_TAREFAS.rstrip("/")
-
-
-# --- 2. Aguardar carregamento real da pagina ---
-def aguardar_conteudo_tarefas(page: Page) -> None:
-    """
-    Aguarda a secao de tarefas carregar de verdade, nao apenas o menu de navegacao.
-    O site e uma SPA — o conteudo e injetado via JS apos o menu aparecer.
-    """
-    # Rola a pagina para acionar lazy loading
-    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    page.wait_for_timeout(1000)
-    page.evaluate("window.scrollTo(0, 0)")
-
-    # Tenta esperar por elementos que indicam conteudo real de tarefas
-    # AJUSTE estes seletores se necessario
-    seletores_conteudo = [
-        "[class*='task']",
-        "[class*='tarefa']",
-        "[class*='atividade']",
-        "[class*='card']",
-        "[class*='item']",
-        "main",
-        "section",
-        "article",
-    ]
-    for sel in seletores_conteudo:
-        try:
-            page.wait_for_selector(sel, timeout=5_000)
-            log.info("Elemento de conteudo encontrado: %s", sel)
-            break
-        except PlaywrightTimeout:
-            continue
-
-    # Aguarda estabilizacao do conteudo (espera o texto parar de crescer)
-    page.wait_for_timeout(3000)
-    tamanho_anterior = 0
-    for _ in range(5):
-        tamanho_atual = page.evaluate("document.body.innerText.length")
-        if tamanho_atual == tamanho_anterior and tamanho_atual > 200:
-            break
-        tamanho_anterior = tamanho_atual
-        page.wait_for_timeout(1500)
-
-    log.info("Pagina estabilizada. Tamanho do texto: %d chars", tamanho_anterior)
-
-
-# --- 3. Login ---
+# --- 2. Login ---
 def fazer_login(page: Page, config: dict) -> None:
     log.info("Abrindo pagina de login...")
     page.goto(URL_LOGIN, wait_until="domcontentloaded")
@@ -148,19 +96,10 @@ def fazer_login(page: Page, config: dict) -> None:
         raise RuntimeError("Pagina de login nao carregou: campo RA nao encontrado em 30s.")
 
     campo_ra.fill(config["RA"])
-
-    campo_digito = page.get_by_placeholder("0").first
-    campo_digito.wait_for(state="visible", timeout=10_000)
-    campo_digito.fill(config["DIGITO"])
-
-    campo_senha = page.get_by_placeholder("Digite sua senha")
-    campo_senha.wait_for(state="visible", timeout=10_000)
-    campo_senha.fill(config["SENHA"])
-
-    btn = page.get_by_role("button", name="Acessar")
-    btn.wait_for(state="visible", timeout=10_000)
-    btn.click()
-    log.info("Botao Acessar clicado. Aguardando redirecionamento...")
+    page.get_by_placeholder("0").first.fill(config["DIGITO"])
+    page.get_by_placeholder("Digite sua senha").fill(config["SENHA"])
+    page.get_by_role("button", name="Acessar").click()
+    log.info("Credenciais enviadas. Aguardando redirecionamento...")
 
     try:
         page.wait_for_url(lambda url: "login" not in url, timeout=30_000)
@@ -169,143 +108,151 @@ def fazer_login(page: Page, config: dict) -> None:
         raise RuntimeError("Login falhou: pagina nao redirecionou apos 30s.")
 
 
-# --- 4. Diagnostico ---
+# --- 3. Aguardar carregamento da SPA ---
+def _aguardar_pagina_estavel(page: Page, minimo_chars: int = 300, tentativas: int = 6) -> None:
+    """Aguarda o texto da pagina parar de crescer (SPA terminou de renderizar)."""
+    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    page.wait_for_timeout(800)
+    page.evaluate("window.scrollTo(0, 0)")
+    page.wait_for_timeout(800)
+
+    anterior = 0
+    for _ in range(tentativas):
+        atual = page.evaluate("document.body.innerText.length")
+        if atual >= minimo_chars and atual == anterior:
+            break
+        anterior = atual
+        page.wait_for_timeout(1500)
+    log.info("Pagina estabilizada com %d chars.", anterior)
+
+
+# --- 4. Diagnostico (modo debug) ---
 def diagnosticar_pagina(page: Page, config: dict) -> None:
+    """Envia ao Telegram um dump completo da pagina para ajudar a identificar seletores."""
     log.info("[DEBUG] Coletando diagnostico...")
 
-    todos_links = page.locator("a[href]").all()
-    links_info = []
-    for link in todos_links[:60]:
-        try:
-            href = link.get_attribute("href") or ""
-            texto = link.inner_text().strip()[:80]
-            if href and texto:
-                links_info.append(f"  [{texto}] -> {href}")
-        except Exception:
-            pass
+    # Todos os elementos visiveis e clicaveis (nao so links)
+    script_elementos = """
+    () => {
+        const sels = ['button', 'li', '[role="button"]', '[role="listitem"]',
+                      '[class*="card"]', '[class*="task"]', '[class*="tarefa"]',
+                      '[class*="item"]', '[class*="atividade"]'];
+        const vistos = new Set();
+        const resultado = [];
+        for (const sel of sels) {
+            for (const el of document.querySelectorAll(sel)) {
+                const txt = el.innerText ? el.innerText.trim().slice(0, 80) : '';
+                const cls = el.className ? el.className.toString().slice(0, 60) : '';
+                const tag = el.tagName.toLowerCase();
+                if (txt && !vistos.has(txt)) {
+                    vistos.add(txt);
+                    resultado.push(tag + ' [' + cls + ']: ' + txt);
+                }
+                if (resultado.length >= 50) break;
+            }
+            if (resultado.length >= 50) break;
+        }
+        return resultado;
+    }
+    """
+    elementos = page.evaluate(script_elementos)
 
+    # Texto completo da pagina
     corpo = page.inner_text("body").strip()
-    linhas_nao_vazias = [l for l in corpo.split("\n") if l.strip()]
+    linhas = [l for l in corpo.split("\n") if l.strip()]
 
-    msg1 = (
-        "<b>[DEBUG] Links na pagina de tarefas:</b>\n"
-        + "\n".join(links_info[:30])
-    )
-    msg2 = (
-        "<b>[DEBUG] Texto da pagina (primeiras 80 linhas):</b>\n"
-        + "\n".join(linhas_nao_vazias[:80])
-    )
+    msg1 = "<b>[DEBUG] Elementos clicaveis na pagina:</b>\n" + "\n".join(elementos[:40])
+    msg2 = "<b>[DEBUG] Texto completo da pagina (100 linhas):</b>\n" + "\n".join(linhas[:100])
 
     enviar_telegram(msg1[:TELEGRAM_MAX], config)
     enviar_telegram(msg2[:TELEGRAM_MAX], config)
     log.info("[DEBUG] Diagnostico enviado.")
 
 
-# --- 5. Listar atividades pendentes ---
+# --- 5. Listar tarefas pendentes ---
 def listar_atividades_pendentes(page: Page) -> list:
+    """
+    Navega para /tarefas, aguarda carregamento e retorna lista de tarefas.
+    Cada item: {titulo, disciplina, prazo}
+    URL nao e usada pois o acesso requer click no card + click em Prosseguir.
+    """
     log.info("Acessando pagina de tarefas...")
     page.goto(URL_TAREFAS, wait_until="domcontentloaded")
-    aguardar_conteudo_tarefas(page)
+    _aguardar_pagina_estavel(page)
 
     atividades = []
 
-    seletores_tentativa = [
-        "a[href*='/tarefa/']",
-        "a[href*='/atividade/']",
-        "a[href*='/task/']",
-        "a[href*='/tarefa']",
-        "a[href*='/questao/']",
-        "a[href*='/exercicio/']",
+    # Tenta encontrar cards de tarefas por seletores comuns
+    # AJUSTE estes seletores apos ver o debug com tarefas reais na pagina
+    seletores_card = [
+        "[class*='task-item']",
+        "[class*='tarefa-item']",
+        "[class*='task-card']",
+        "[class*='tarefa-card']",
+        "[class*='activity-item']",
+        "[class*='atividade-item']",
+        "li[class*='task']",
+        "li[class*='tarefa']",
+        "li[class*='item']",
+        "[role='listitem']",
     ]
 
-    links = []
-    for sel in seletores_tentativa:
-        encontrados = page.locator(sel).all()
-        validos = []
-        for l in encontrados:
-            try:
-                href = l.get_attribute("href") or ""
-                url_norm = _normalizar_url(href)
-                if _e_url_especifica(url_norm):
-                    validos.append(l)
-            except Exception:
-                pass
+    cards_encontrados = []
+    seletor_usado = None
+    for sel in seletores_card:
+        candidatos = page.locator(sel).all()
+        validos = [c for c in candidatos if _e_titulo_valido(c.inner_text().strip()[:80])]
         if validos:
-            links = validos
-            log.info("Seletor '%s' encontrou %d links especificos.", sel, len(links))
+            cards_encontrados = validos
+            seletor_usado = sel
+            log.info("Cards encontrados com seletor: %s (%d items)", sel, len(validos))
             break
 
-    if links:
-        for link in links:
+    if cards_encontrados:
+        for card in cards_encontrados:
             try:
-                titulo = link.inner_text().strip()
-                href = link.get_attribute("href") or ""
-                url_ativ = _normalizar_url(href)
-
-                if not _e_titulo_valido(titulo):
-                    log.debug("Titulo ignorado: %r", titulo)
+                texto = card.inner_text().strip()
+                linhas = [l.strip() for l in texto.split("\n") if l.strip()]
+                titulo = next((l for l in linhas if _e_titulo_valido(l)), "")
+                if not titulo:
                     continue
-
-                card = link.locator(
-                    "xpath=ancestor::article | xpath=ancestor::li | xpath=ancestor::div[@class]"
-                ).first
-                disciplina, prazo = "", ""
-                try:
-                    disciplina = card.locator(
-                        ".disciplina, [class*='subject'], [class*='component']"
-                    ).first.inner_text().strip()
-                except Exception:
-                    pass
-                try:
-                    prazo = card.locator(
-                        ".prazo, .data, [class*='deadline'], [class*='date']"
-                    ).first.inner_text().strip()
-                except Exception:
-                    pass
-
-                atividades.append({"titulo": titulo, "url": url_ativ,
-                                   "disciplina": disciplina, "prazo": prazo})
+                disciplina = ""
+                prazo = ""
+                # Tenta inferir disciplina e prazo das outras linhas do card
+                for l in linhas:
+                    if re.search(r'\d{2}/\d{2}/\d{4}', l) and not prazo:
+                        prazo = l
+                    elif l != titulo and _e_titulo_valido(l) and not disciplina:
+                        disciplina = l
+                atividades.append({"titulo": titulo, "disciplina": disciplina, "prazo": prazo})
             except Exception as exc:
-                log.debug("Erro ao processar link: %s", exc)
+                log.debug("Erro ao ler card: %s", exc)
     else:
-        log.info("Nenhum link especifico encontrado. Usando leitura de texto (fallback).")
+        # Fallback: leitura de texto apos secao de filtros
+        log.info("Cards nao encontrados via seletor. Usando leitura de texto.")
         corpo = page.inner_text("body")
         linhas = [l.strip() for l in corpo.split("\n") if l.strip()]
-        log.info("Total de linhas no texto: %d", len(linhas))
+        log.info("Total de linhas: %d", len(linhas))
 
-        # Localiza o fim da secao de filtros (Turmas/Status/Componente)
-        # As tarefas aparecem APOS esses filtros na estrutura da pagina
         marcos_filtro = {"turmas:", "status", "componente", "a fazer", "todas as turmas"}
         ultimo_filtro = -1
         for i, linha in enumerate(linhas):
-            if linha.lower() in marcos_filtro:
+            if _remover_acentos(linha) in marcos_filtro:
                 ultimo_filtro = i
 
-        # Itens de navegacao conhecidos para ignorar apos os filtros
-        nav_conhecida = {
-            "sobre", "suporte", "ouvidoria", "termos de uso",
-            "politica de privacidade", "central de atendimento",
-            "portal de atendimento", "apps"
-        }
+        rodape_inicio = {"sobre", "suporte", "ouvidoria", "termos de uso",
+                         "politica de privacidade", "central de atendimento",
+                         "portal de atendimento", "apps"}
 
         if ultimo_filtro >= 0:
-            log.info("Secao de filtros termina na linha %d. Buscando tarefas apos ela.", ultimo_filtro)
+            log.info("Buscando tarefas apos linha %d.", ultimo_filtro)
             for linha in linhas[ultimo_filtro + 1:]:
-                t = _normalizar_titulo(linha)
-                if t in nav_conhecida:
-                    break  # chegou no rodape, para
+                if _remover_acentos(linha) in rodape_inicio:
+                    break
                 if _e_titulo_valido(linha):
-                    atividades.append({"titulo": linha, "url": URL_TAREFAS,
-                                       "disciplina": "", "prazo": ""})
-        else:
-            # Fallback antigo: busca apos "A Fazer"
-            for i, linha in enumerate(linhas):
-                if linha == "A Fazer" and i + 1 < len(linhas):
-                    nome = linhas[i + 1]
-                    if _e_titulo_valido(nome):
-                        atividades.append({"titulo": nome, "url": URL_TAREFAS,
-                                           "disciplina": "", "prazo": ""})
+                    atividades.append({"titulo": linha, "disciplina": "", "prazo": ""})
 
+    # Remove duplicatas
     vistos: set = set()
     resultado = []
     for a in atividades:
@@ -317,42 +264,91 @@ def listar_atividades_pendentes(page: Page) -> list:
     return resultado
 
 
-# --- 6. Abrir atividade ---
-def abrir_atividade(page: Page, url: str) -> bool:
-    if not _e_url_especifica(url):
+# --- 6. Abrir atividade (click no card + Prosseguir) ---
+def abrir_atividade(page: Page, titulo: str) -> bool:
+    """
+    Navega para /tarefas, clica no card da tarefa e depois em Prosseguir.
+    Retorna True se chegou na pagina da tarefa com sucesso.
+    """
+    log.info("Abrindo tarefa: %s", titulo)
+
+    # Volta para /tarefas se nao estiver la
+    if URL_TAREFAS not in page.url:
+        page.goto(URL_TAREFAS, wait_until="domcontentloaded")
+        _aguardar_pagina_estavel(page)
+
+    # Tenta encontrar o card pelo titulo
+    # AJUSTE o seletor se necessario apos ver o debug
+    card = None
+    seletores_card = [
+        f"text={titulo}",
+        f"[title='{titulo}']",
+    ]
+    for sel in seletores_card:
+        try:
+            candidato = page.locator(sel).first
+            if candidato.is_visible():
+                card = candidato
+                break
+        except Exception:
+            pass
+
+    if not card:
+        log.warning("Card da tarefa nao encontrado: %s", titulo)
         return False
+
     try:
-        log.info("Abrindo atividade: %s", url)
-        page.goto(url, wait_until="domcontentloaded")
-        page.wait_for_function("document.body.innerText.length > 50", timeout=20_000)
-        page.wait_for_timeout(2000)
+        card.click()
+        log.info("Card clicado. Aguardando botao Prosseguir...")
+
+        # Aguarda o botao Prosseguir aparecer
+        # AJUSTE o seletor se o texto do botao for diferente
+        btn_prosseguir = page.locator(
+            "button:has-text('Prosseguir'), "
+            "[class*='button']:has-text('Prosseguir'), "
+            "a:has-text('Prosseguir')"
+        ).first
+        btn_prosseguir.wait_for(state="visible", timeout=10_000)
+        btn_prosseguir.click()
+        log.info("Prosseguir clicado. Aguardando conteudo da tarefa...")
+
+        # Aguarda conteudo da tarefa carregar
+        _aguardar_pagina_estavel(page, minimo_chars=200, tentativas=5)
         return True
+
     except PlaywrightTimeout:
-        log.warning("Timeout ao abrir atividade: %s", url)
+        log.warning("Timeout aguardando botao Prosseguir para: %s", titulo)
         return False
     except Exception as exc:
-        log.warning("Erro ao abrir atividade %s: %s", url, exc)
+        log.warning("Erro ao abrir tarefa %s: %s", titulo, exc)
         return False
 
 
-# --- 7. Extrair conteudo ---
+# --- 7. Extrair conteudo da tarefa ---
 def extrair_conteudo_atividade(page: Page) -> dict:
+    """
+    Extrai titulo, disciplina, prazo, enunciado, alternativas e texto de apoio.
+    AJUSTE OS SELETORES apos ver o debug numa tarefa aberta.
+    """
     conteudo = {
         "titulo": "", "disciplina": "", "prazo": "",
         "enunciado": "", "alternativas": [], "textos_apoio": [],
         "texto_completo": "", "leitura_ok": False
     }
     try:
-        for sel in ["h1", "h2.titulo", ".titulo-atividade", "[class*='title']"]:
+        for sel in ["h1", "h2", "[class*='title']", "[class*='titulo']"]:
             try:
                 el = page.locator(sel).first
                 if el.is_visible():
-                    conteudo["titulo"] = el.inner_text().strip()
-                    break
+                    t = el.inner_text().strip()
+                    if _e_titulo_valido(t):
+                        conteudo["titulo"] = t
+                        break
             except Exception:
                 pass
 
-        for sel in [".disciplina", "[class*='subject']", "[class*='component']", ".componente"]:
+        for sel in [".disciplina", "[class*='subject']", "[class*='component']",
+                    "[class*='componente']", "[class*='disciplina']"]:
             try:
                 el = page.locator(sel).first
                 if el.is_visible():
@@ -361,7 +357,7 @@ def extrair_conteudo_atividade(page: Page) -> dict:
             except Exception:
                 pass
 
-        for sel in [".prazo", ".data-entrega", "[class*='deadline']", "[class*='due']"]:
+        for sel in [".prazo", "[class*='deadline']", "[class*='prazo']", "[class*='due']"]:
             try:
                 el = page.locator(sel).first
                 if el.is_visible():
@@ -370,37 +366,43 @@ def extrair_conteudo_atividade(page: Page) -> dict:
             except Exception:
                 pass
 
-        for sel in [".enunciado", ".questao", ".conteudo-atividade", "[class*='statement']",
-                    "[class*='question']", "p.descricao", ".descricao"]:
+        for sel in [".enunciado", ".questao", "[class*='statement']", "[class*='question']",
+                    "[class*='enunciado']", "[class*='descricao']", "p"]:
             try:
                 el = page.locator(sel).first
                 if el.is_visible():
-                    conteudo["enunciado"] = el.inner_text().strip()
-                    break
+                    t = el.inner_text().strip()
+                    if len(t) > 20:
+                        conteudo["enunciado"] = t
+                        break
             except Exception:
                 pass
 
-        for sel in [".alternativa", "[class*='option']", "[class*='choice']", "li.item-alternativa"]:
+        for sel in [".alternativa", "[class*='option']", "[class*='choice']",
+                    "[class*='alternativa']", "li[class*='item']"]:
             try:
                 els = page.locator(sel).all()
                 if els:
                     conteudo["alternativas"] = [e.inner_text().strip() for e in els
                                                 if e.inner_text().strip()]
-                    break
+                    if conteudo["alternativas"]:
+                        break
             except Exception:
                 pass
 
-        for sel in [".texto-apoio", "[class*='support']", ".leitura", "[class*='reading']"]:
+        for sel in [".texto-apoio", "[class*='support']", "[class*='reading']",
+                    "[class*='leitura']", "[class*='apoio']"]:
             try:
                 els = page.locator(sel).all()
                 if els:
                     conteudo["textos_apoio"] = [e.inner_text().strip() for e in els
                                                 if e.inner_text().strip()]
-                    break
+                    if conteudo["textos_apoio"]:
+                        break
             except Exception:
                 pass
 
-        conteudo["texto_completo"] = page.inner_text("main, article, .conteudo, body").strip()[:3000]
+        conteudo["texto_completo"] = page.inner_text("main, article, body").strip()[:3000]
         conteudo["leitura_ok"] = bool(
             conteudo["titulo"] or conteudo["enunciado"] or conteudo["texto_completo"]
         )
@@ -411,7 +413,7 @@ def extrair_conteudo_atividade(page: Page) -> dict:
 
 # --- 8. Identificador unico ---
 def gerar_id_atividade(atividade: dict) -> str:
-    chave = f"{atividade['titulo']}|{atividade['url']}"
+    chave = f"{atividade['titulo']}"
     return hashlib.sha256(chave.encode()).hexdigest()[:16]
 
 
@@ -446,9 +448,7 @@ def gerar_resposta_educacional(conteudo: dict, api_key: str) -> dict:
         "observacao": ""
     }
     if not api_key:
-        resultado["observacao"] = (
-            "Resposta automatica nao gerada: ANTHROPIC_API_KEY nao configurada."
-        )
+        resultado["observacao"] = "Resposta automatica nao gerada: ANTHROPIC_API_KEY nao configurada."
         return resultado
 
     texto_atividade = f"Titulo: {conteudo['titulo']}\n"
@@ -472,9 +472,8 @@ def gerar_resposta_educacional(conteudo: dict, api_key: str) -> dict:
         "- Se for discursiva, escreva resposta modelo em linguagem simples.\n"
         "- Se houver calculo, mostre o passo a passo.\n"
         "- Se for interpretacao de texto, explique onde a resposta aparece.\n"
-        "- Se o conteudo estiver incompleto, diga isso.\n"
         "- NUNCA invente informacoes.\n"
-        "- Responda sempre em portugues brasileiro.\n\n"
+        "- Responda em portugues brasileiro.\n\n"
         "Responda em JSON:\n"
         '{"resposta_sugerida":"...","explicacao":"...","nivel_confianca":"alto|medio|baixo","observacao":"..."}'
     )
@@ -503,12 +502,9 @@ def gerar_resposta_educacional(conteudo: dict, api_key: str) -> dict:
             resultado.update({k: dados.get(k, "") for k in resultado})
         else:
             resultado["resposta_sugerida"] = texto_resp[:500]
-    except requests.HTTPError as exc:
-        log.warning("Erro na API Anthropic: %s", exc)
-        resultado["observacao"] = f"Erro ao gerar resposta: {exc}"
     except Exception as exc:
-        log.warning("Erro inesperado: %s", exc)
-        resultado["observacao"] = "Erro inesperado ao gerar resposta educacional."
+        log.warning("Erro na geracao de resposta: %s", exc)
+        resultado["observacao"] = f"Erro ao gerar resposta: {exc}"
     return resultado
 
 
@@ -527,11 +523,11 @@ def enviar_telegram(mensagem: str, config: dict) -> None:
             timeout=30
         )
         if resp.status_code == 200:
-            log.info("Mensagem Telegram enviada.")
+            log.info("Telegram enviado.")
         else:
             log.warning("Erro Telegram %d: %s", resp.status_code, resp.text[:200])
     except requests.RequestException as exc:
-        log.error("Falha ao enviar Telegram: %s", exc)
+        log.error("Falha Telegram: %s", exc)
 
 
 def formatar_mensagem_atividade(atividade: dict, conteudo: dict, resposta: dict) -> str:
@@ -540,14 +536,12 @@ def formatar_mensagem_atividade(atividade: dict, conteudo: dict, resposta: dict)
     )
     partes = ["<b>Nova atividade encontrada</b>\n"]
     partes.append(f"<b>Titulo:</b>\n{conteudo['titulo'] or atividade['titulo']}\n")
-    if conteudo["disciplina"] or atividade["disciplina"]:
-        partes.append(f"<b>Disciplina:</b>\n{conteudo['disciplina'] or atividade['disciplina']}\n")
-    if conteudo["prazo"] or atividade["prazo"]:
-        partes.append(f"<b>Prazo:</b>\n{conteudo['prazo'] or atividade['prazo']}\n")
+    if conteudo["disciplina"] or atividade.get("disciplina"):
+        partes.append(f"<b>Disciplina:</b>\n{conteudo['disciplina'] or atividade.get('disciplina', '')}\n")
+    if conteudo["prazo"] or atividade.get("prazo"):
+        partes.append(f"<b>Prazo:</b>\n{conteudo['prazo'] or atividade.get('prazo', '')}\n")
     if conteudo["enunciado"]:
-        enunciado = conteudo["enunciado"]
-        if len(enunciado) > 600:
-            enunciado = enunciado[:600] + "..."
+        enunciado = conteudo["enunciado"][:600] + ("..." if len(conteudo["enunciado"]) > 600 else "")
         partes.append(f"<b>Enunciado:</b>\n{enunciado}\n")
     elif not conteudo["leitura_ok"]:
         partes.append("<b>Enunciado:</b>\nNao foi possivel ler o conteudo desta atividade.\n")
@@ -559,7 +553,7 @@ def formatar_mensagem_atividade(atividade: dict, conteudo: dict, resposta: dict)
         partes.append(f"<b>Explicacao:</b>\n{resposta['explicacao']}\n")
     if resposta["observacao"]:
         partes.append(f"<b>Observacao:</b>\n{resposta['observacao']}\n")
-    partes.append(f"<b>Link:</b>\n{atividade['url']}")
+    partes.append(f"<b>Link:</b>\n{URL_TAREFAS}")
     return "\n".join(partes)
 
 
@@ -592,7 +586,7 @@ def main():
 
                 if MODO_DEBUG:
                     page.goto(URL_TAREFAS, wait_until="domcontentloaded")
-                    aguardar_conteudo_tarefas(page)
+                    _aguardar_pagina_estavel(page)
                     diagnosticar_pagina(page, config)
 
                 try:
@@ -607,17 +601,24 @@ def main():
                     id_ativ = gerar_id_atividade(atividade)
 
                     conteudo = {
-                        "titulo": atividade["titulo"], "disciplina": atividade["disciplina"],
-                        "prazo": atividade["prazo"], "enunciado": "", "alternativas": [],
+                        "titulo": atividade["titulo"],
+                        "disciplina": atividade.get("disciplina", ""),
+                        "prazo": atividade.get("prazo", ""),
+                        "enunciado": "", "alternativas": [],
                         "textos_apoio": [], "texto_completo": "", "leitura_ok": False
                     }
 
-                    abriu = abrir_atividade(page, atividade["url"])
+                    # Clica no card e em Prosseguir
+                    abriu = abrir_atividade(page, atividade["titulo"])
                     if abriu:
                         conteudo = extrair_conteudo_atividade(page)
                         conteudo["titulo"] = conteudo["titulo"] or atividade["titulo"]
-                        conteudo["disciplina"] = conteudo["disciplina"] or atividade["disciplina"]
-                        conteudo["prazo"] = conteudo["prazo"] or atividade["prazo"]
+                        conteudo["disciplina"] = conteudo["disciplina"] or atividade.get("disciplina", "")
+                        conteudo["prazo"] = conteudo["prazo"] or atividade.get("prazo", "")
+
+                        # Em modo debug, envia o dump da pagina da tarefa aberta
+                        if MODO_DEBUG:
+                            diagnosticar_pagina(page, config)
 
                     hash_atual = gerar_hash_conteudo(conteudo)
                     registro = estado.get(id_ativ, {})
@@ -626,6 +627,9 @@ def main():
 
                     if ja_processada and not conteudo_mudou:
                         log.info("Sem alteracoes: %s", atividade["titulo"])
+                        # Volta para /tarefas para proxima iteracao
+                        page.goto(URL_TAREFAS, wait_until="domcontentloaded")
+                        _aguardar_pagina_estavel(page)
                         continue
 
                     tipo = "Atualizacao" if (ja_processada and conteudo_mudou) else "Nova atividade"
@@ -635,28 +639,28 @@ def main():
                     resposta = gerar_resposta_educacional(conteudo, config["ANTHROPIC_API_KEY"])
 
                     if not abriu and not conteudo["leitura_ok"]:
-                        if _e_url_especifica(atividade["url"]):
-                            mensagem = (
-                                f"Atividade encontrada, mas nao lida\n\n"
-                                f"Titulo: {atividade['titulo']}\n"
-                                f"Link: {atividade['url']}\n\n"
-                                "Nao foi possivel abrir a atividade para leitura completa."
-                            )
-                            enviar_telegram(mensagem, config)
-                        else:
-                            log.warning("Atividade sem URL especifica ignorada: %s", atividade["titulo"])
+                        mensagem = (
+                            f"Atividade encontrada, mas nao lida\n\n"
+                            f"Titulo: {atividade['titulo']}\n"
+                            f"Link: {URL_TAREFAS}\n\n"
+                            "Nao foi possivel abrir a atividade para leitura completa."
+                        )
                     else:
                         mensagem = formatar_mensagem_atividade(atividade, conteudo, resposta)
                         if ja_processada and conteudo_mudou:
                             mensagem = "Atividade atualizada\n\n" + mensagem
-                        enviar_telegram(mensagem, config)
+
+                    enviar_telegram(mensagem, config)
 
                     estado[id_ativ] = {
                         "titulo": atividade["titulo"],
-                        "url": atividade["url"],
                         "processado_em": datetime.now().isoformat(),
                         "hash_conteudo": hash_atual
                     }
+
+                    # Volta para /tarefas para proxima iteracao
+                    page.goto(URL_TAREFAS, wait_until="domcontentloaded")
+                    _aguardar_pagina_estavel(page)
 
             finally:
                 browser.close()
