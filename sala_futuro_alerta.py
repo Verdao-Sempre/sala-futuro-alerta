@@ -30,6 +30,12 @@ TELEGRAM_MAX   = int(os.environ.get("TELEGRAM_MAX_LENGTH", "4000"))
 ENVIAR_OK      = os.environ.get("ENVIAR_OK", "false").lower() == "true"
 IS_CLOUD       = os.environ.get("GITHUB_ACTIONS") == "true"
 
+# Titulos que indicam navegacao ou cabecalho, nao atividades reais
+TITULOS_IGNORAR = {
+    "tarefa sp", "home", "status", "a fazer", "componente", "turmas",
+    "entregar", "tarefas", "atividades", "menu", "inicio", "voltar"
+}
+
 
 # --- 1. Variaveis obrigatorias ---
 def carregar_variaveis() -> dict:
@@ -49,13 +55,34 @@ def carregar_variaveis() -> dict:
     return config
 
 
+def _e_titulo_valido(titulo: str) -> bool:
+    """Retorna False se o titulo parecer navegacao, cabecalho ou texto generico."""
+    t = titulo.strip().lower()
+    if len(t) < 4:
+        return False
+    if t in TITULOS_IGNORAR:
+        return False
+    if any(ignorar in t for ignorar in TITULOS_IGNORAR):
+        return False
+    # Filtra titulos que sao so datas ou numeros
+    if re.fullmatch(r'[\d/\-\s:]+', t):
+        return False
+    return True
+
+
+def _normalizar_url(href: str) -> str:
+    if not href:
+        return ""
+    if href.startswith("http"):
+        return href
+    return f"https://saladofuturo.educacao.sp.gov.br{href}"
+
+
 # --- 2. Login ---
 def fazer_login(page: Page, config: dict) -> None:
-    """Faz login no Sala do Futuro. Usa waits por elemento, nao networkidle."""
     log.info("Abrindo pagina de login...")
     page.goto(URL_LOGIN, wait_until="domcontentloaded")
 
-    # Aguarda o campo de RA aparecer — indica que o formulario carregou
     # AJUSTE O SELETOR se o placeholder mudar
     try:
         campo_ra = page.get_by_placeholder("Ex.: 186735683")
@@ -64,7 +91,6 @@ def fazer_login(page: Page, config: dict) -> None:
         raise RuntimeError("Pagina de login nao carregou: campo RA nao encontrado em 30s.")
 
     campo_ra.fill(config["RA"])
-    log.info("RA preenchido.")
 
     # AJUSTE O SELETOR se o placeholder do digito mudar
     campo_digito = page.get_by_placeholder("0").first
@@ -81,7 +107,6 @@ def fazer_login(page: Page, config: dict) -> None:
     btn.click()
     log.info("Botao Acessar clicado. Aguardando redirecionamento...")
 
-    # Aguarda sair da pagina de login
     try:
         page.wait_for_url(lambda url: "login" not in url, timeout=30_000)
         log.info("Login realizado com sucesso.")
@@ -92,15 +117,13 @@ def fazer_login(page: Page, config: dict) -> None:
 # --- 3. Listar atividades pendentes ---
 def listar_atividades_pendentes(page: Page) -> list:
     """
-    Acessa /tarefas e retorna lista de dicts com titulo, url, disciplina, prazo.
+    Acessa /tarefas e retorna lista de atividades com titulo, url, disciplina, prazo.
 
-    AJUSTE OS SELETORES conforme o HTML real do site.
-    Inspecione no Chrome DevTools (F12) para encontrar os seletores corretos.
+    AJUSTE OS SELETORES conforme o HTML real do site (inspecione com F12).
     """
     log.info("Acessando pagina de tarefas...")
     page.goto(URL_TAREFAS, wait_until="domcontentloaded")
 
-    # Aguarda o corpo da pagina ter conteudo relevante (sem networkidle)
     try:
         page.wait_for_function("document.body.innerText.length > 100", timeout=30_000)
     except PlaywrightTimeout:
@@ -108,17 +131,32 @@ def listar_atividades_pendentes(page: Page) -> list:
 
     atividades = []
 
-    # Tenta localizar links de atividades — AJUSTE ESTE SELETOR
-    links = page.locator("a[href*='/tarefa'], a[href*='/atividade'], a[href*='/task']").all()
+    # Seletor de links de atividades especificas.
+    # Usa /tarefa/ e /atividade/ com barra para evitar capturar /tarefas (pagina de listagem).
+    # AJUSTE conforme os hrefs reais do site.
+    seletores_link = (
+        "a[href*='/tarefa/'], "
+        "a[href*='/atividade/'], "
+        "a[href*='/task/'], "
+        "a[href*='/questao/'], "
+        "a[href*='/exercicio/']"
+    )
+    links = page.locator(seletores_link).all()
 
     if links:
+        log.info("Encontrados %d links de atividades via seletor.", len(links))
         for link in links:
             try:
                 titulo = link.inner_text().strip()
                 href = link.get_attribute("href") or ""
-                if not titulo or len(titulo) < 3:
+                url_ativ = _normalizar_url(href)
+
+                # Descarta se URL for a pagina generica de tarefas
+                if url_ativ.rstrip("/") == URL_TAREFAS.rstrip("/"):
                     continue
-                url_ativ = href if href.startswith("http") else f"https://saladofuturo.educacao.sp.gov.br{href}"
+                if not _e_titulo_valido(titulo):
+                    log.debug("Titulo ignorado (navegacao/header): %r", titulo)
+                    continue
 
                 card = link.locator(
                     "xpath=ancestor::article | xpath=ancestor::li | xpath=ancestor::div[@class]"
@@ -140,21 +178,20 @@ def listar_atividades_pendentes(page: Page) -> list:
                 atividades.append({"titulo": titulo, "url": url_ativ,
                                    "disciplina": disciplina, "prazo": prazo})
             except Exception as exc:
-                log.debug("Erro ao processar link de atividade: %s", exc)
+                log.debug("Erro ao processar link: %s", exc)
     else:
         # Fallback: leitura de texto simples
-        log.info("Nenhum link encontrado via seletor. Usando leitura de texto.")
+        log.info("Nenhum link especifico encontrado. Usando leitura de texto.")
         corpo = page.inner_text("body")
         linhas = [l.strip() for l in corpo.split("\n") if l.strip()]
-        ignorar = ["Entregar", " dia", "2025", "2026", "Tarefa SP",
-                   "Home", "Status", "A Fazer", "Componente", "Turmas"]
         for i, linha in enumerate(linhas):
             if linha == "A Fazer" and i + 1 < len(linhas):
                 nome = linhas[i + 1]
-                if nome and len(nome) > 3 and not any(p in nome for p in ignorar):
+                if _e_titulo_valido(nome):
                     atividades.append({"titulo": nome, "url": URL_TAREFAS,
                                        "disciplina": "", "prazo": ""})
 
+    # Remove duplicatas por titulo
     vistos: set = set()
     resultado = []
     for a in atividades:
@@ -168,12 +205,12 @@ def listar_atividades_pendentes(page: Page) -> list:
 
 # --- 4. Abrir atividade ---
 def abrir_atividade(page: Page, url: str) -> bool:
-    if url == URL_TAREFAS:
+    """Retorna False se URL for generica ou se a navegacao falhar."""
+    if not url or url.rstrip("/") == URL_TAREFAS.rstrip("/"):
         return False
     try:
         log.info("Abrindo atividade: %s", url)
         page.goto(url, wait_until="domcontentloaded")
-        # Aguarda conteudo minimo aparecer, sem networkidle
         page.wait_for_function("document.body.innerText.length > 50", timeout=20_000)
         return True
     except PlaywrightTimeout:
@@ -189,8 +226,7 @@ def extrair_conteudo_atividade(page: Page) -> dict:
     """
     Extrai titulo, disciplina, prazo, enunciado, alternativas e textos de apoio.
 
-    AJUSTE OS SELETORES conforme o HTML real do Sala do Futuro.
-    Inspecione cada elemento no DevTools e substitua os seletores abaixo.
+    AJUSTE OS SELETORES conforme o HTML real do Sala do Futuro (inspecione com F12).
     """
     conteudo = {
         "titulo": "", "disciplina": "", "prazo": "",
@@ -429,6 +465,7 @@ def main():
 
     config = carregar_variaveis()
     estado = carregar_estado()
+    atividades = []
 
     try:
         with sync_playwright() as p:
@@ -487,19 +524,25 @@ def main():
 
                     resposta = gerar_resposta_educacional(conteudo, config["ANTHROPIC_API_KEY"])
 
-                    if not conteudo["leitura_ok"] and not abriu:
-                        mensagem = (
-                            f"Atividade encontrada, mas nao lida\n\n"
-                            f"Titulo: {atividade['titulo']}\n"
-                            f"Link: {atividade['url']}\n\n"
-                            "Nao foi possivel abrir a atividade para leitura completa."
-                        )
+                    # So envia "nao lida" se tiver URL especifica — evita spam de links genericos
+                    if not abriu and not conteudo["leitura_ok"]:
+                        if atividade["url"] != URL_TAREFAS:
+                            mensagem = (
+                                f"Atividade encontrada, mas nao lida\n\n"
+                                f"Titulo: {atividade['titulo']}\n"
+                                f"Link: {atividade['url']}\n\n"
+                                "Nao foi possivel abrir a atividade para leitura completa."
+                            )
+                            enviar_telegram(mensagem, config)
+                        else:
+                            log.warning(
+                                "Atividade sem URL especifica ignorada: %s", atividade["titulo"]
+                            )
                     else:
                         mensagem = formatar_mensagem_atividade(atividade, conteudo, resposta)
                         if ja_processada and conteudo_mudou:
                             mensagem = "Atividade atualizada\n\n" + mensagem
-
-                    enviar_telegram(mensagem, config)
+                        enviar_telegram(mensagem, config)
 
                     estado[id_ativ] = {
                         "titulo": atividade["titulo"],
