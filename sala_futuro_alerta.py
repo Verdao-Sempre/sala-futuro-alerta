@@ -78,7 +78,7 @@ def buscar_atividades(page):
                         "Home", "Status", "A Fazer", "Componente", "Turmas"]
 
     for i, linha in enumerate(linhas):
-        if linha == "A Fazer" and i + 1 < len(linhas):
+        if linha in ("A Fazer", "Rascunho") and i + 1 < len(linhas):
             nome = linhas[i + 1]
             print(f"  -> Candidato encontrado: '{nome}'")
             if nome and len(nome.strip()) > 3 and not any(p in nome for p in palavras_ignorar) and nome not in atividades:
