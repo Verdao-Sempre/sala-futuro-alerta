@@ -10,11 +10,12 @@ import requests
 from playwright.sync_api import sync_playwright
 from datetime import datetime
 import unicodedata
+import sys
 
-RA               = os.environ.get("RA",               "000110134488")
-DIGITO           = os.environ.get("DIGITO",           "x")
-SENHA            = os.environ.get("SENHA",            "mj13112008")
-TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "")
+RA               = os.environ.get("RA")
+DIGITO           = os.environ.get("DIGITO")
+SENHA            = os.environ.get("SENHA")
+TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN", "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
@@ -31,45 +32,81 @@ NAV_IGNORAR = {
 }
 
 
+# ============================================================
+#  VALIDACAO DE CREDENCIAIS
+# ============================================================
+
+def validar_credenciais():
+    """Falha imediatamente se credenciais obrigatorias estao faltando."""
+    erros = []
+    if not RA:
+        erros.append("RA nao configurada")
+    if not DIGITO:
+        erros.append("DIGITO nao configurada")
+    if not SENHA:
+        erros.append("SENHA nao configurada")
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("  ⚠️  AVISO: Telegram nao configurado - alertas nao serao enviados")
+    
+    if erros:
+        msg = "ERRO - Credenciais obrigatorias faltando:\n" + "\n".join(erros)
+        print(f"  {msg}")
+        enviar_telegram(msg)
+        sys.exit(1)
+
+
 def carregar_atividades_salvas():
     if os.path.exists(ARQUIVO_ATIVIDADES):
-        with open(ARQUIVO_ATIVIDADES, "r", encoding="utf-8") as f:
-            return json.load(f)
+        try:
+            with open(ARQUIVO_ATIVIDADES, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"  ⚠️  Erro ao carregar historico: {e}")
+            return []
     return []
 
 
 def salvar_atividades(atividades):
-    with open(ARQUIVO_ATIVIDADES, "w", encoding="utf-8") as f:
-        json.dump(atividades, f, ensure_ascii=False, indent=2)
+    try:
+        with open(ARQUIVO_ATIVIDADES, "w", encoding="utf-8") as f:
+            json.dump(atividades, f, ensure_ascii=False, indent=2)
+        print(f"  ✓ Historico salvo ({len(atividades)} atividades)")
+    except Exception as e:
+        print(f"  ✗ Erro ao salvar historico: {e}")
 
 
 def fazer_login(page):
-    print("  -> Abrindo pagina de login...")
+    print("  → Abrindo pagina de login...")
     page.goto("https://saladofuturo.educacao.sp.gov.br/login-alunos", wait_until="domcontentloaded")
     time.sleep(6)
-    page.get_by_placeholder("Ex.: 186735683").click()
-    page.get_by_placeholder("Ex.: 186735683").type(RA)
-    page.get_by_placeholder("0").first.click()
-    page.get_by_placeholder("0").first.type(DIGITO)
-    page.get_by_placeholder("Digite sua senha").click()
-    page.get_by_placeholder("Digite sua senha").type(SENHA)
-    time.sleep(1)
-    page.get_by_role("button", name="Acessar").click()
-    time.sleep(5)
-    # Verificar se login funcionou
-    url_atual = page.url
-    print(f"  -> Login realizado! URL: {url_atual}")
-    time.sleep(3)
-    url_pos = page.url
-    print(f"  -> URL apos espera: {url_pos}")
+    
+    try:
+        page.get_by_placeholder("Ex.: 186735683").click()
+        page.get_by_placeholder("Ex.: 186735683").type(RA)
+        page.get_by_placeholder("0").first.click()
+        page.get_by_placeholder("0").first.type(DIGITO)
+        page.get_by_placeholder("Digite sua senha").click()
+        page.get_by_placeholder("Digite sua senha").type(SENHA)
+        time.sleep(1)
+        page.get_by_role("button", name="Acessar").click()
+        time.sleep(5)
+        
+        url_atual = page.url
+        print(f"  ✓ Login realizado! URL: {url_atual}")
+        time.sleep(3)
+    except Exception as e:
+        print(f"  ✗ Erro no login: {e}")
+        raise
 
 
 def buscar_atividades(page):
-    print("  -> Verificando tarefas...")
+    print("  → Verificando tarefas...")
     page.goto("https://saladofuturo.educacao.sp.gov.br/tarefas", wait_until="domcontentloaded")
     time.sleep(5)
+    
     url_tarefas = page.url
-    print(f"  -> URL da pagina de tarefas: {url_tarefas}")
+    print(f"  ✓ URL da pagina de tarefas: {url_tarefas}")
+    
     for _ in range(3):
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         time.sleep(1)
@@ -78,13 +115,9 @@ def buscar_atividades(page):
 
     corpo = page.inner_text("body")
     linhas = [l.strip() for l in corpo.split("\n") if l.strip()]
-    print(f"  -> Total de linhas na pagina: {len(linhas)}")
-    # Mostra primeiras 5 linhas para diagnostico rapido
-    for i in range(min(5, len(linhas))):
-        print(f"  -> L{i}: {repr(linhas[i])}")
+    print(f"  ✓ Total de linhas na pagina: {len(linhas)}")
 
     atividades = []
-    # Todos os status possiveis de tarefas em aberto
     STATUS_ABERTO = {"A Fazer", "Rascunho", "Em andamento", "Em Andamento",
                      "Em progresso", "Em Progresso", "Iniciado", "Iniciada"}
     palavras_ignorar = ["Entregar", " dia", "2025", "2026", "Tarefa SP",
@@ -93,10 +126,8 @@ def buscar_atividades(page):
 
     for i, linha in enumerate(linhas):
         if linha in STATUS_ABERTO:
-            # Procura o nome nas proximas 3 linhas (ignora linhas curtas/numericas)
             for j in range(i + 1, min(i + 4, len(linhas))):
                 nome = linhas[j]
-                print(f"  -> Candidato [{linha}] linha {j}: '{nome}'")
                 if (nome and len(nome.strip()) > 5
                         and not any(p in nome for p in palavras_ignorar)
                         and not nome.strip().isdigit()
@@ -104,22 +135,12 @@ def buscar_atividades(page):
                     atividades.append(nome)
                     break
 
-    print(f"  -> {len(atividades)} tarefa(s) em aberto: {atividades}")
-
-    if len(atividades) == 0:
-        # Imprime TODAS as linhas no log E envia pro Telegram
-        print(f"  -> DEBUG: todas as {len(linhas)} linhas da pagina:")
-        for i, l in enumerate(linhas):
-            print(f"    {i:02d}: {repr(l)}")
-        todas = "\n".join([f"{i:02d}: {linhas[i]}" for i in range(len(linhas))])
-        debug_msg = f"DEBUG: 0 atividades.\nTotal linhas: {len(linhas)}\n\n{todas}"
-        enviar_telegram_longo("", debug_msg.split("\n"))
-
+    print(f"  ✓ {len(atividades)} tarefa(s) em aberto: {atividades}")
     return atividades
 
 
 def abrir_atividade(page, nome_atividade):
-    print(f"  -> Abrindo atividade: {nome_atividade}")
+    print(f"  → Abrindo atividade: {nome_atividade}")
     page.goto("https://saladofuturo.educacao.sp.gov.br/tarefas", wait_until="domcontentloaded")
     time.sleep(3)
     for _ in range(2):
@@ -137,7 +158,7 @@ def abrir_atividade(page, nome_atividade):
         clicou = True
         time.sleep(2)
     except Exception as e:
-        print(f"  -> Falhou texto exato: {e}")
+        print(f"  ⚠️  Falhou texto exato: {e}")
 
     if not clicou:
         try:
@@ -147,7 +168,7 @@ def abrir_atividade(page, nome_atividade):
             clicou = True
             time.sleep(2)
         except Exception as e:
-            print(f"  -> Falhou texto parcial: {e}")
+            print(f"  ⚠️  Falhou texto parcial: {e}")
             return None, None
 
     textos_botao = ["Prosseguir para a tarefa", "Prosseguir", "Acessar tarefa", "Iniciar"]
@@ -156,7 +177,7 @@ def abrir_atividade(page, nome_atividade):
             btn = page.get_by_role("button", name=texto)
             btn.wait_for(state="visible", timeout=5000)
             btn.click()
-            print(f"  -> Botao '{texto}' clicado!")
+            print(f"  ✓ Botao '{texto}' clicado!")
             time.sleep(4)
             break
         except Exception:
@@ -164,18 +185,18 @@ def abrir_atividade(page, nome_atividade):
                 btn = page.get_by_text(texto).first
                 btn.wait_for(state="visible", timeout=3000)
                 btn.click()
-                print(f"  -> Botao '{texto}' clicado via texto!")
+                print(f"  ✓ Botao '{texto}' clicado via texto!")
                 time.sleep(4)
                 break
             except Exception:
                 pass
     else:
-        print(f"  -> Nenhum botao de prosseguir encontrado.")
+        print(f"  ✗ Nenhum botao de prosseguir encontrado.")
         return None, None
 
     url_atividade = page.url
     conteudo = page.inner_text("body")
-    print(f"  -> URL final: {url_atividade}")
+    print(f"  ✓ URL final: {url_atividade}")
     return url_atividade, conteudo
 
 
@@ -213,7 +234,7 @@ def filtrar_conteudo(texto_bruto, nome_atividade=""):
 
 def chamar_groq(prompt, max_tokens=2048, temperature=0.3):
     if not GROQ_API_KEY:
-        enviar_telegram("Aviso: GROQ_API_KEY nao configurada.")
+        print("  ⚠️  GROQ_API_KEY nao configurada.")
         return None
     try:
         resp = requests.post(
@@ -228,20 +249,22 @@ def chamar_groq(prompt, max_tokens=2048, temperature=0.3):
             timeout=60
         )
         if resp.status_code == 200:
-            return resp.json()["choices"][0]["message"]["content"].strip()
+            resultado = resp.json()["choices"][0]["message"]["content"].strip()
+            print(f"  ✓ IA respondeu ({len(resultado)} chars)")
+            return resultado
         else:
-            print(f"  -> Erro Groq {resp.status_code}: {resp.text[:200]}")
+            print(f"  ✗ Erro Groq {resp.status_code}: {resp.text[:200]}")
             enviar_telegram(f"Erro Groq: {resp.status_code}\n{resp.text[:200]}")
             return None
     except Exception as e:
-        print(f"  -> Falha Groq: {e}")
+        print(f"  ✗ Falha Groq: {e}")
         enviar_telegram(f"Falha Groq: {e}")
         return None
 
 
 def responder_com_ia(conteudo_atividade, nome_atividade):
     """Retorna respostas em texto legivel para enviar no Telegram."""
-    print(f"  -> IA (respostas texto)... chave: {GROQ_API_KEY[:8]}...")
+    print(f"  → IA (respostas texto)...")
     prompt = f"""Voce e um assistente que ajuda estudantes do ensino medio brasileiro.
 Responda APENAS as questoes, sem repetir o enunciado.
 
@@ -261,16 +284,13 @@ CONTEUDO DA ATIVIDADE "{nome_atividade}":
 {conteudo_atividade[:6000]}
 """
     resposta = chamar_groq(prompt, max_tokens=2048, temperature=0.3)
-    if resposta:
-        print("  -> IA respondeu (texto)!")
     return resposta
 
 
 def obter_respostas_json(conteudo_atividade, nome_atividade, opcoes_dropdowns=None):
     """Retorna JSON estruturado para clicar automaticamente."""
-    print(f"  -> IA (JSON para cliques)...")
+    print(f"  → IA (JSON para cliques)...")
 
-    # Monta bloco de opcoes para guiar a IA (antes do f-string)
     opcoes_info = ""
     if opcoes_dropdowns:
         opcoes_info = "OPCOES DISPONIVEIS NOS DROPDOWNS (use EXATAMENTE um destes textos por lacuna):\n"
@@ -285,12 +305,14 @@ REGRAS OBRIGATORIAS:
 - multipla_escolha: respostas sao APENAS letras maiusculas (A, B, C, D, E). Nunca use textos.
 - unica_escolha: resposta e APENAS uma letra maiuscula (A, B, C, D, E). Nunca use textos.
 - dropdown: use EXATAMENTE um dos textos listados nas "OPCOES DOS DROPDOWNS" abaixo.
+- verdadeiro_falso: resposta e "Certo" ou "Errado" (exato).
 
 Exemplo de formato:
 {{
   "1": {{"tipo": "multipla_escolha", "respostas": ["B", "D"]}},
   "2": {{"tipo": "unica_escolha", "respostas": ["C"]}},
-  "3": {{"tipo": "dropdown", "respostas": ["termo1", "termo2", "termo3"]}}
+  "3": {{"tipo": "dropdown", "respostas": ["termo1", "termo2"]}},
+  "4": {{"tipo": "verdadeiro_falso", "respostas": ["Certo"]}}
 }}
 
 {opcoes_info}CONTEUDO "{nome_atividade}":
@@ -313,16 +335,22 @@ JSON:"""
                     texto = parte
                     break
         resultado = json.loads(texto)
-        print(f"  -> JSON: {resultado}")
+        print(f"  ✓ JSON: {resultado}")
         return resultado
     except Exception as e:
-        print(f"  -> Erro JSON: {e} | Resposta: {resposta[:200]}")
+        print(f"  ✗ Erro JSON: {e} | Resposta: {resposta[:200]}")
         return None
 
 
 # ============================================================
 #  CLICAR NAS RESPOSTAS
 # ============================================================
+
+def _norm(s):
+    """Remove acentos e normaliza para comparacao flexivel."""
+    nfkd = unicodedata.normalize("NFKD", s.lower())
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
 
 def clicar_checkbox_radio(page, letra_ou_texto, num_questao):
     """Clica no checkbox/radio. Aceita letra (A/B/C) ou texto (Certo/Errado)."""
@@ -339,17 +367,17 @@ def clicar_checkbox_radio(page, letra_ou_texto, num_questao):
             for (let i = 0; i < 5; i++) {
                 el = el.parentElement;
                 if (!el) break;
-                const texto = (el.innerText || el.textContent || \'\').trim();
+                const texto = (el.innerText || el.textContent || '').trim();
                 if (!texto) continue;
                 const tn = norm(texto);
                 // 1) Como letra: A), A., A<espaco>
-                const padrao = new RegExp(\'^\' + termo + \'[).\\\\s]\');
-                if (padrao.test(texto) || texto.startsWith(termo + \')\') || texto.startsWith(termo + \'.\')) {
+                const padrao = new RegExp('^' + termo + '[).\\\\s]');
+                if (padrao.test(texto) || texto.startsWith(termo + ')') || texto.startsWith(termo + '.')) {
                     if (!inp.checked) inp.click();
                     return true;
                 }
                 // 2) Por texto (ex: "Certo", "Errado")
-                if (tn === termoNorm || tn.startsWith(termoNorm + \' \') || tn.startsWith(termoNorm + \')\')) {
+                if (tn === termoNorm || tn.startsWith(termoNorm + ' ') || tn.startsWith(termoNorm + ')')) {
                     if (!inp.checked) inp.click();
                     return true;
                 }
@@ -360,29 +388,25 @@ def clicar_checkbox_radio(page, letra_ou_texto, num_questao):
     """, [termo, termo_norm])
 
     if clicou:
-        print(f"    -> Clicou '{letra_ou_texto}' (Q{num_questao})")
+        print(f"    ✓ Clicou '{letra_ou_texto}' (Q{num_questao})")
         time.sleep(0.4)
     else:
-        print(f"    -> Nao achou '{letra_ou_texto}' (Q{num_questao})")
+        print(f"    ⚠️  Nao achou '{letra_ou_texto}' (Q{num_questao})")
     return clicou
-
-def _norm(s):
-    """Remove acentos e normaliza para comparacao flexivel."""
-    nfkd = unicodedata.normalize("NFKD", s.lower())
-    return "".join(c for c in nfkd if not unicodedata.combining(c))
 
 
 def clicar_dropdown(page, indice, termo):
     """
-    Abre o dropdown de indice dado e seleciona o termo usando matching flexivel
-    (ignora acentos, maiusculas/minusculas e correspondencia parcial).
+    Abre select NATIVO (ou combobox React) e seleciona o termo.
+    Usa matching flexivel (ignora acentos).
     """
     termo_norm = _norm(termo)
 
     try:
-        # 1) Tenta select nativo
+        # 1) Primeiro tenta select nativo HTML
         selects = page.query_selector_all("select")
         if indice < len(selects):
+            print(f"    → Select nativo {indice+1} encontrado")
             opcoes = selects[indice].query_selector_all("option")
             for opcao in opcoes:
                 texto = opcao.inner_text().strip()
@@ -392,41 +416,25 @@ def clicar_dropdown(page, indice, termo):
                         selects[indice].select_option(value=opcao.get_attribute("value"))
                     except Exception:
                         selects[indice].select_option(label=texto)
-                    print(f"    -> Select {indice+1}: '{texto}'")
+                    print(f"    ✓ Select {indice+1}: '{texto}'")
                     time.sleep(0.3)
                     return True
+            print(f"    ⚠️  Opcao '{termo}' nao encontrada no select {indice+1}")
+            return False
 
-        # 2) Dropdown customizado React
+        # 2) Se nao tem select, tenta combobox React
         cbs = page.query_selector_all(
             '[role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="true"]')
         if indice >= len(cbs):
-            print(f"    -> Combobox {indice+1} nao encontrado (total: {len(cbs)})")
+            print(f"    ⚠️  Select/Combobox {indice+1} nao encontrado")
             return False
 
         cb = cbs[indice]
         cb.scroll_into_view_if_needed()
         time.sleep(0.5)
         cb.click()
-        time.sleep(1.5)  # aguarda animacao do dropdown
+        time.sleep(1.5)
 
-        # Debug: ver quais opcoes aparecem
-        debug_ops = page.evaluate("""
-        () => {
-            const sels = ['[role="option"]', '.MuiMenuItem-root', 'li[data-value]',
-                          '[class*="MenuItem"]', '[class*="option"]'];
-            for (const s of sels) {
-                const els = Array.from(document.querySelectorAll(s))
-                    .filter(e => e.offsetWidth > 0 || e.offsetHeight > 0);
-                if (els.length > 0) {
-                    return els.slice(0,5).map(e=>(e.innerText||e.textContent||'').trim()).join(' | ');
-                }
-            }
-            return 'nenhuma';
-        }
-        """)
-        print(f"    -> Opcoes: {debug_ops[:120]}")
-
-        # 3) JS: percorre TODOS os elementos visiveis buscando o texto
         clicou = page.evaluate("""
         (termoNorm) => {
             function norm(s) {
@@ -440,17 +448,11 @@ def clicar_dropdown(page, indice, termo):
                 '.MuiListItem-root',
                 '[class*="MenuItem"]',
                 '[class*="option"]',
-                '[class*="Option"]',
-                '[class*="item"]',
-                '[class*="Item"]',
-                '[role="listbox"] *',
-                'ul[role] li',
                 'li'
             ];
             for (const sel of seletores) {
                 const els = Array.from(document.querySelectorAll(sel));
                 for (const el of els) {
-                    // Usa offsetWidth/Height em vez de offsetParent para detectar visibilidade
                     if (el.offsetWidth === 0 && el.offsetHeight === 0) continue;
                     const texto = (el.innerText || el.textContent || "").trim();
                     if (!texto) continue;
@@ -466,59 +468,79 @@ def clicar_dropdown(page, indice, termo):
         """, termo_norm)
 
         if clicou:
-            print(f"    -> Dropdown {indice+1}: '{clicou}' (JS match)")
+            print(f"    ✓ Combobox {indice+1}: '{clicou}'")
             time.sleep(0.4)
             return True
         else:
-            print(f"    -> Opcao '{termo}' nao encontrada no dropdown {indice+1}")
+            print(f"    ⚠️  Opcao '{termo}' nao encontrada no combobox {indice+1}")
             page.keyboard.press("Escape")
             time.sleep(0.3)
             return False
 
     except Exception as e:
-        print(f"    -> Erro dropdown {indice+1}: {e}")
+        print(f"    ✗ Erro dropdown {indice+1}: {e}")
         return False
 
 
-
 def extrair_opcoes_dropdowns(page):
-    """Abre cada combobox, le as opcoes e fecha. Retorna {indice: [opcoes]}."""
+    """Extrai opcoes de SELECT nativos e comboboxes React."""
     opcoes_por_dd = {}
     try:
-        cbs = page.query_selector_all(
-            '[role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="true"]')
-        print(f"  -> Encontrado {len(cbs)} dropdown(s) na pagina")
-        for i, cb in enumerate(cbs):
+        # Primeiro: SELECT nativos
+        selects = page.query_selector_all("select")
+        print(f"  → Encontrado {len(selects)} select(s) nativo(s)")
+        
+        for i, select in enumerate(selects):
             try:
-                cb.scroll_into_view_if_needed()
-                time.sleep(0.3)
-                cb.click()
-                time.sleep(1.2)
-                opcoes = page.evaluate("""
-                () => {
-                    const sels = ['[role="option"]', '.MuiMenuItem-root', 'li[data-value]',
-                                  '[class*="MenuItem"]', '[class*="option"]'];
-                    for (const s of sels) {
-                        const els = Array.from(document.querySelectorAll(s))
-                            .filter(e => e.offsetWidth > 0 || e.offsetHeight > 0);
-                        if (els.length > 0)
-                            return els.map(e => (e.innerText || e.textContent || '').trim()).filter(t => t);
-                    }
-                    return [];
-                }
-                """)
-                if opcoes:
-                    opcoes_por_dd[i] = opcoes
-                    print(f"  -> Dropdown {i+1} opcoes: {opcoes}")
-                page.keyboard.press("Escape")
-                time.sleep(0.5)
+                opcoes = select.query_selector_all("option")
+                opcoes_texto = [op.inner_text().strip() for op in opcoes if op.inner_text().strip()]
+                if opcoes_texto:
+                    opcoes_por_dd[i] = opcoes_texto
+                    print(f"  ✓ Select {i+1} opcoes: {opcoes_texto[:3]}...")
             except Exception as e:
-                print(f"  -> Erro ao ler dropdown {i+1}: {e}")
-                try: page.keyboard.press("Escape")
-                except: pass
+                print(f"  ⚠️  Erro ao ler select {i+1}: {e}")
+
+        # Segundo: Comboboxes React (caso nao tenha encontrado selects)
+        if not opcoes_por_dd:
+            cbs = page.query_selector_all(
+                '[role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="true"]')
+            print(f"  → Encontrado {len(cbs)} combobox(es) React")
+            
+            for i, cb in enumerate(cbs):
+                try:
+                    cb.scroll_into_view_if_needed()
+                    time.sleep(0.3)
+                    cb.click()
+                    time.sleep(1.2)
+                    opcoes = page.evaluate("""
+                    () => {
+                        const sels = ['[role="option"]', '.MuiMenuItem-root', 'li[data-value]',
+                                      '[class*="MenuItem"]'];
+                        for (const s of sels) {
+                            const els = Array.from(document.querySelectorAll(s))
+                                .filter(e => e.offsetWidth > 0 || e.offsetHeight > 0);
+                            if (els.length > 0)
+                                return els.map(e => (e.innerText || e.textContent || '').trim()).filter(t => t);
+                        }
+                        return [];
+                    }
+                    """)
+                    if opcoes:
+                        opcoes_por_dd[len(opcoes_por_dd)] = opcoes
+                        print(f"  ✓ Combobox {i+1} opcoes: {opcoes[:3]}...")
+                    page.keyboard.press("Escape")
+                    time.sleep(0.5)
+                except Exception as e:
+                    print(f"  ⚠️  Erro ao ler combobox {i+1}: {e}")
+                    try:
+                        page.keyboard.press("Escape")
+                    except:
+                        pass
     except Exception as e:
-        print(f"  -> Erro ao extrair dropdowns: {e}")
+        print(f"  ✗ Erro ao extrair dropdowns: {e}")
+    
     return opcoes_por_dd
+
 
 def clicar_respostas_pagina(page, respostas_json):
     """Clica nas respostas corretas baseado no JSON da IA. Retorna total de cliques."""
@@ -528,16 +550,16 @@ def clicar_respostas_pagina(page, respostas_json):
     page.evaluate("window.scrollTo(0, 0)")
     time.sleep(0.5)
     total = 0
-    dropdown_indice = 0  # contador global de dropdowns na pagina
+    dropdown_indice = 0
 
     for num_q_str, dados in sorted(respostas_json.items(), key=lambda x: int(x[0])):
         num_q = int(num_q_str)
         tipo = dados.get("tipo", "multipla_escolha")
         respostas = dados.get("respostas", [])
 
-        print(f"  -> Q{num_q} ({tipo}): {respostas}")
+        print(f"  → Q{num_q} ({tipo}): {respostas}")
 
-        if tipo in ("multipla_escolha", "unica_escolha"):
+        if tipo in ("multipla_escolha", "unica_escolha", "verdadeiro_falso"):
             for letra in respostas:
                 if clicar_checkbox_radio(page, letra, num_q):
                     total += 1
@@ -570,13 +592,13 @@ def salvar_rascunho_pagina(page):
             btn = fn()
             if btn.is_visible(timeout=2000):
                 btn.click()
-                print("  -> Rascunho salvo!")
+                print("  ✓ Rascunho salvo!")
                 time.sleep(2)
                 return True
         except Exception:
             pass
 
-    print("  -> Botao Salvar Rascunho nao encontrado")
+    print("  ⚠️  Botao Salvar Rascunho nao encontrado")
     return False
 
 
@@ -586,14 +608,17 @@ def salvar_rascunho_pagina(page):
 
 def enviar_telegram(mensagem):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print(f"  Telegram nao configurado. Mensagem:\n{mensagem}")
+        print(f"  [TELEGRAM DESATIVADO] {mensagem[:100]}...")
         return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
-    resp = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": mensagem}, timeout=30)
-    if resp.status_code == 200:
-        print("  -> Telegram enviado!")
-    else:
-        print(f"  Erro Telegram: {resp.status_code} - {resp.text}")
+    try:
+        resp = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": mensagem}, timeout=30)
+        if resp.status_code == 200:
+            print("  ✓ Telegram enviado!")
+        else:
+            print(f"  ✗ Erro Telegram: {resp.status_code}")
+    except Exception as e:
+        print(f"  ✗ Falha Telegram: {e}")
 
 
 def enviar_telegram_longo(titulo, linhas):
@@ -616,11 +641,16 @@ def enviar_telegram_longo(titulo, linhas):
 
 def main():
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
-    print(f"\n{'='*50}")
-    print(f"  Verificacao iniciada: {agora}")
-    print(f"{'='*50}")
+    print(f"\n{'='*60}")
+    print(f"  🚀 Verificacao iniciada: {agora}")
+    print(f"{'='*60}")
 
-    atividades_salvas = []  # TEMP: ignorar historico
+    # Validar credenciais
+    validar_credenciais()
+
+    # Carregar historico
+    atividades_salvas = carregar_atividades_salvas()
+    print(f"  📋 Historico carregado: {len(atividades_salvas)} atividades ja processadas")
 
     is_cloud = os.environ.get("GITHUB_ACTIONS") == "true"
 
@@ -641,27 +671,27 @@ def main():
             novas = [a for a in atividades_atuais if a not in atividades_salvas]
 
             if novas:
-                print(f"\n  {len(novas)} NOVA(S) ATIVIDADE(S):")
+                print(f"\n  📌 {len(novas)} NOVA(S) ATIVIDADE(S):")
 
-                resumo = f"Sala do Futuro - {len(novas)} nova(s) atividade(s)!\n\n"
+                resumo = f"🎯 Sala do Futuro - {len(novas)} nova(s) atividade(s)!\n\n"
                 for a in novas:
-                    resumo += f"- {a}\n"
-                resumo += f"\nTotal em aberto: {len(atividades_atuais)}"
-                resumo += "\nhttps://saladofuturo.educacao.sp.gov.br/tarefas"
+                    resumo += f"  • {a}\n"
+                resumo += f"\n📊 Total em aberto: {len(atividades_atuais)}"
+                resumo += "\n🔗 https://saladofuturo.educacao.sp.gov.br/tarefas"
                 enviar_telegram(resumo)
 
                 for nome in novas:
-                    print(f"\n  -> Processando: {nome}")
+                    print(f"\n  📝 Processando: {nome}")
                     url_atv, conteudo_atv = abrir_atividade(page, nome)
 
                     if url_atv and conteudo_atv:
                         linhas_filtradas = filtrar_conteudo(conteudo_atv, nome)
                         conteudo_limpo = "\n".join(linhas_filtradas)
 
-                        # Passo 1: Extrai opcoes reais dos dropdowns para guiar a IA
+                        # Extrai opcoes reais dos dropdowns
                         opcoes_dd = extrair_opcoes_dropdowns(page)
 
-                        # Passo 2: JSON de respostas para clicar
+                        # JSON de respostas para clicar
                         respostas_json = obter_respostas_json(conteudo_limpo, nome, opcoes_dd)
 
                         cliques = 0
@@ -673,36 +703,43 @@ def main():
                             if cliques > 0:
                                 rascunho_salvo = salvar_rascunho_pagina(page)
 
-                        # Passo 2: Respostas em texto para Telegram
+                        # Respostas em texto para Telegram
                         time.sleep(8)  # evita rate limit TPM do Groq
                         resposta_ia = responder_com_ia(conteudo_limpo, nome)
 
                         # Status do auto-responder
                         if cliques > 0:
-                            status = f"\n\nRespondido automaticamente: {cliques} questao(oes)"
-                            status += " | Rascunho salvo!" if rascunho_salvo else " | (salve o rascunho manualmente)"
+                            status = f"\n\n✅ Respondido automaticamente: {cliques} questao(oes)"
+                            status += " | ✓ Rascunho salvo!" if rascunho_salvo else " | ⚠️  (salve o rascunho manualmente)"
                         else:
-                            status = "\n\n(Auto-responder nao clicou — confira manualmente)"
+                            status = "\n\n⚠️  Auto-responder nao clicou — confira manualmente"
 
                         if resposta_ia:
-                            cab = f"Atividade: {nome}\nLink: {url_atv}{status}\n\n--- Respostas ---\n"
+                            cab = f"📚 Atividade: {nome}\n🔗 Link: {url_atv}{status}\n\n--- 📋 Respostas ---\n"
                             enviar_telegram_longo(cab, resposta_ia.split("\n"))
                         else:
                             enviar_telegram(
-                                f"Atividade: {nome}\nLink: {url_atv}{status}\n\n"
+                                f"📚 Atividade: {nome}\n🔗 Link: {url_atv}{status}\n\n"
                                 f"(Acesse o link para confirmar)"
                             )
+
+                        # Adicionar ao historico
+                        atividades_salvas.append(nome)
                     else:
                         enviar_telegram(
-                            f"Atividade: {nome}\n\n"
-                            f"Nao foi possivel abrir automaticamente.\n"
-                            f"Acesse: https://saladofuturo.educacao.sp.gov.br/tarefas"
+                            f"📚 Atividade: {nome}\n\n"
+                            f"⚠️  Nao foi possivel abrir automaticamente.\n"
+                            f"🔗 Acesse: https://saladofuturo.educacao.sp.gov.br/tarefas"
                         )
+                        atividades_salvas.append(nome)
+
+                # Salvar estado
+                salvar_atividades(atividades_salvas)
 
             else:
-                print("\n  Nenhuma atividade nova. Tudo em dia!")
+                print("\n  ✓ Nenhuma atividade nova. Tudo em dia!")
                 enviar_telegram(
-                    f"Sala do Futuro - OK\n\n"
+                    f"✓ Sala do Futuro - OK\n\n"
                     f"Nenhuma tarefa nova.\n"
                     f"Total em aberto: {len(atividades_atuais)}\n"
                     f"Horario: {agora}"
@@ -710,14 +747,13 @@ def main():
 
             browser.close()
 
-        pass  # TEMP: nao salvar historico
-
     except Exception as erro:
-        print(f"\n  Erro: {erro}")
+        print(f"\n  ✗ Erro: {erro}")
+        enviar_telegram(f"❌ ERRO na automacao:\n\n{str(erro)[:500]}")
         raise
 
-    print(f"\n  Verificacao concluida: {datetime.now().strftime('%H:%M:%S')}")
-    print(f"{'='*50}\n")
+    print(f"\n  ✓ Verificacao concluida: {datetime.now().strftime('%H:%M:%S')}")
+    print(f"{'='*60}\n")
 
 
 if __name__ == "__main__":
