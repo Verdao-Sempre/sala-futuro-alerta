@@ -198,7 +198,7 @@ def main():
     print(f"  Verificacao iniciada: {agora}")
     print(f"{'='*50}")
 
-    atividades_salvas = carregar_atividades_salvas()
+    atividades_salvas = []  # TEMP: ignorar historico
 
     is_cloud = os.environ.get("GITHUB_ACTIONS") == "true"
 
@@ -254,7 +254,7 @@ def main():
 
             browser.close()
 
-        salvar_atividades(atividades_atuais)
+        pass  # TEMP: nao salvar historico
 
     except Exception as erro:
         print(f"\n  Erro: {erro}")
