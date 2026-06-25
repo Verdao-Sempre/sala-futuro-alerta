@@ -87,7 +87,7 @@ def buscar_atividades(page):
 
 def abrir_atividade(page, nome_atividade):
     """
-    Clica no card da atividade e depois em Prosseguir.
+    Clica no card da atividade, depois clica em 'Prosseguir para a tarefa'.
     Retorna (url_final, conteudo_texto) ou (None, None) se falhar.
     """
     print(f"  -> Abrindo atividade: {nome_atividade}")
@@ -97,56 +97,79 @@ def abrir_atividade(page, nome_atividade):
     time.sleep(3)
 
     # Rola para carregar todos os cards
-    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-    time.sleep(1)
+    for _ in range(2):
+        page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+        time.sleep(1)
     page.evaluate("window.scrollTo(0, 0)")
     time.sleep(1)
 
-    # Tenta clicar no card pelo texto exato do nome
+    # Clica no card pelo nome da atividade
+    clicou = False
     try:
         card = page.get_by_text(nome_atividade, exact=True).first
         card.scroll_into_view_if_needed()
         time.sleep(0.5)
         card.click()
-        time.sleep(3)
+        clicou = True
+        print(f"  -> Card clicado (texto exato)")
+        time.sleep(2)
     except Exception as e:
-        print(f"  -> Nao encontrou card pelo texto exato: {e}")
+        print(f"  -> Falhou texto exato: {e}")
+
+    if not clicou:
         try:
             card = page.locator(f"text={nome_atividade}").first
+            card.scroll_into_view_if_needed()
+            time.sleep(0.5)
             card.click()
-            time.sleep(3)
-        except Exception as e2:
-            print(f"  -> Falhou busca parcial tambem: {e2}")
+            clicou = True
+            print(f"  -> Card clicado (texto parcial)")
+            time.sleep(2)
+        except Exception as e:
+            print(f"  -> Falhou texto parcial: {e}")
             return None, None
 
-    # Procura botao Prosseguir
+    # Procura e clica em "Prosseguir para a tarefa"
     url_atividade = None
     conteudo = ""
 
-    try:
-        btn = page.get_by_role("button", name="Prosseguir")
-        btn.wait_for(state="visible", timeout=8000)
-        btn.click()
-        time.sleep(4)
-        url_atividade = page.url
-        conteudo = page.inner_text("body")[:3000]
-        print(f"  -> Aberto! URL: {url_atividade}")
-    except Exception as e:
-        print(f"  -> Botao Prosseguir nao encontrado: {e}")
-        url_atual = page.url
-        if "tarefas" not in url_atual:
-            url_atividade = url_atual
-            conteudo = page.inner_text("body")[:3000]
-        else:
+    # Tenta variacoes do texto do botao
+    textos_botao = ["Prosseguir para a tarefa", "Prosseguir", "Acessar tarefa", "Iniciar"]
+    botao_clicado = False
+
+    for texto in textos_botao:
+        try:
+            btn = page.get_by_role("button", name=texto)
+            btn.wait_for(state="visible", timeout=5000)
+            btn.click()
+            botao_clicado = True
+            print(f"  -> Botao '{texto}' clicado!")
+            time.sleep(4)
+            break
+        except Exception:
+            pass
+
+    if not botao_clicado:
+        # Tenta por get_by_text
+        for texto in textos_botao:
             try:
-                link = page.get_by_text("Prosseguir").first
-                link.click()
+                btn = page.get_by_text(texto).first
+                btn.wait_for(state="visible", timeout=3000)
+                btn.click()
+                botao_clicado = True
+                print(f"  -> Botao '{texto}' clicado via get_by_text!")
                 time.sleep(4)
-                url_atividade = page.url
-                conteudo = page.inner_text("body")[:3000]
-            except Exception as e3:
-                print(f"  -> Nao conseguiu abrir a atividade: {e3}")
-                return None, None
+                break
+            except Exception:
+                pass
+
+    if not botao_clicado:
+        print(f"  -> Nenhum botao de prosseguir encontrado.")
+        return None, None
+
+    url_atividade = page.url
+    conteudo = page.inner_text("body")[:4000]
+    print(f"  -> URL final: {url_atividade}")
 
     return url_atividade, conteudo
 
@@ -190,15 +213,22 @@ def main():
             fazer_login(page)
             atividades_atuais = buscar_atividades(page)
 
+            # Novas = atividades que ainda nao estao salvas
             novas = [a for a in atividades_atuais if a not in atividades_salvas]
+
+            # Removidas = atividades salvas que sumiram da lista (entregues/expiradas)
+            removidas = [a for a in atividades_salvas if a not in atividades_atuais]
+            if removidas:
+                print(f"  -> {len(removidas)} atividade(s) concluida(s)/removida(s): {removidas}")
 
             if novas:
                 print(f"\n  {len(novas)} NOVA(S) ATIVIDADE(S):")
 
-                # Mensagem resumo inicial
+                # Mensagem resumo
                 resumo = f"Sala do Futuro - {len(novas)} nova(s) atividade(s)!\n\n"
                 for a in novas:
                     resumo += f"- {a}\n"
+                resumo += f"\nTotal em aberto: {len(atividades_atuais)}"
                 resumo += "\nhttps://saladofuturo.educacao.sp.gov.br/tarefas"
                 enviar_telegram(resumo)
 
@@ -207,14 +237,16 @@ def main():
                     print(f"\n  -> Processando: {nome}")
                     url_atv, conteudo_atv = abrir_atividade(page, nome)
 
-                    if url_atv:
-                        linhas_conteudo = [l.strip() for l in conteudo_atv.split("\n") if len(l.strip()) > 10]
-                        trecho = "\n".join(linhas_conteudo[:30])
+                    if url_atv and conteudo_atv:
+                        # Filtra linhas com conteudo relevante
+                        linhas_conteudo = [l.strip() for l in conteudo_atv.split("\n")
+                                           if len(l.strip()) > 10]
+                        trecho = "\n".join(linhas_conteudo[:35])
 
                         mensagem_detalhe = (
                             f"Atividade: {nome}\n\n"
                             f"Link: {url_atv}\n\n"
-                            f"Conteudo:\n{trecho[:1500]}"
+                            f"--- Conteudo ---\n{trecho[:1800]}"
                         )
                     else:
                         mensagem_detalhe = (
@@ -236,6 +268,7 @@ def main():
 
             browser.close()
 
+        # Salva apenas as atividades que ainda estao em aberto
         salvar_atividades(atividades_atuais)
 
     except Exception as erro:
