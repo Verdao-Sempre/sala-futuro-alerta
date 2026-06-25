@@ -1,0 +1,47 @@
+name: Alerta Sala do Futuro
+
+on:
+  schedule:
+    - cron: '0 13 * * *'
+  workflow_dispatch:
+
+jobs:
+  verificar:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Baixar o codigo
+        uses: actions/checkout@v4
+
+      - name: Restaurar atividades salvas
+        uses: actions/cache@v4
+        with:
+          path: atividades_salvas.json
+          key: atividades-cache
+          restore-keys: atividades-cache
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install -r requirements.txt
+          playwright install chromium
+          playwright install-deps chromium
+
+      - name: Executar verificacao
+        env:
+          RA: ${{ secrets.RA }}
+          DIGITO: ${{ secrets.DIGITO }}
+          SENHA: ${{ secrets.SENHA }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python sala_futuro_alerta.py
+
+      - name: Salvar atividades atualizadas
+        uses: actions/cache@v4
+        with:
+          path: atividades_salvas.json
+          key: atividades-cache
