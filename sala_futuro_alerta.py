@@ -16,6 +16,8 @@ SENHA            = os.environ.get("SENHA",            "mj13112008")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
+ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+
 ARQUIVO_ATIVIDADES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atividades_salvas.json")
 
 # Linhas de navegacao para ignorar no conteudo
@@ -193,6 +195,50 @@ def filtrar_conteudo(texto_bruto, nome_atividade=""):
     return resultado
 
 
+
+def responder_com_ia(conteudo_atividade, nome_atividade):
+    """Envia o conteudo da atividade para o Claude e retorna as respostas."""
+    if not ANTHROPIC_API_KEY:
+        return None
+
+    print("  -> Enviando para IA...")
+    prompt = f"""Voce e um assistente que ajuda estudantes do ensino medio brasileiro.
+Abaixo esta o conteudo completo de uma atividade escolar chamada "{nome_atividade}".
+Leia com atencao e responda CADA QUESTAO de forma direta e objetiva.
+Para cada questao, indique qual alternativa esta correta (A, B, C, D ou E) e explique brevemente o motivo.
+Se for questao discursiva, escreva uma resposta modelo curta e clara.
+Seja objetivo — o aluno quer saber as respostas rapidamente.
+
+CONTEUDO DA ATIVIDADE:
+{conteudo_atividade[:6000]}
+"""
+
+    try:
+        resp = requests.post(
+            "https://api.anthropic.com/v1/messages",
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json"
+            },
+            json={
+                "model": "claude-haiku-4-5-20251001",
+                "max_tokens": 2048,
+                "messages": [{"role": "user", "content": prompt}]
+            },
+            timeout=60
+        )
+        if resp.status_code == 200:
+            resposta = resp.json()["content"][0]["text"]
+            print("  -> IA respondeu!")
+            return resposta
+        else:
+            print(f"  -> Erro IA: {resp.status_code}")
+            return None
+    except Exception as e:
+        print(f"  -> Falha na IA: {e}")
+        return None
+
 def enviar_telegram(mensagem):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         print(f"  Telegram nao configurado. Mensagem:\n{mensagem}")
@@ -264,8 +310,23 @@ def main():
 
                     if url_atv and conteudo_atv:
                         linhas_filtradas = filtrar_conteudo(conteudo_atv, nome)
-                        titulo_msg = f"Atividade: {nome}\nLink: {url_atv}\n\n--- Conteudo ---"
-                        enviar_telegram_longo(titulo_msg, linhas_filtradas)
+                        conteudo_limpo = "\n".join(linhas_filtradas)
+
+                        # Tenta obter resposta da IA
+                        resposta_ia = responder_com_ia(conteudo_limpo, nome)
+
+                        if resposta_ia:
+                            mensagem_final = (
+                                f"Atividade: {nome}\n"
+                                f"Link: {url_atv}\n\n"
+                                f"--- Respostas da IA ---\n\n"
+                                f"{resposta_ia}"
+                            )
+                            enviar_telegram_longo("", [mensagem_final])
+                        else:
+                            # Sem IA: envia conteudo normal
+                            titulo_msg = f"Atividade: {nome}\nLink: {url_atv}\n\n--- Conteudo ---"
+                            enviar_telegram_longo(titulo_msg, linhas_filtradas)
                     else:
                         enviar_telegram(
                             f"Atividade: {nome}\n\n"
