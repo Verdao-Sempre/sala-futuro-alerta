@@ -70,7 +70,7 @@ def buscar_atividades(page):
     for i, linha in enumerate(linhas):
         if linha == "A Fazer" and i + 1 < len(linhas):
             nome = linhas[i + 1]
-            if not any(p in nome for p in palavras_ignorar) and nome not in atividades:
+            if nome and len(nome.strip()) > 3 and not any(p in nome for p in palavras_ignorar) and nome not in atividades:
                 atividades.append(nome)
 
     print(f"  -> {len(atividades)} tarefa(s) em aberto.")
