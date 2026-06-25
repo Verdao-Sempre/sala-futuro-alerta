@@ -147,19 +147,39 @@ def abrir_atividade(page, nome_atividade):
     return url_atividade, conteudo
 
 
-def filtrar_conteudo(texto_bruto):
-    """Remove linhas de navegacao e retorna apenas o conteudo relevante."""
+def filtrar_conteudo(texto_bruto, nome_atividade=""):
+    """Extrai apenas o conteudo da atividade, do titulo ate o rodape."""
     linhas = [l.strip() for l in texto_bruto.split("\n") if l.strip()]
-    resultado = []
-    for linha in linhas:
+    
+    # Marcadores de fim do conteudo util
+    fim_marcadores = ["voltar", "salvar rascunho", "finalizar", "ouvidoria",
+                      "politica de privacidade", "0800-", "tentativas restantes"]
+    
+    # Encontra onde o conteudo da atividade comeca
+    # Procura pelo nome da atividade ou por "Introducao" / primeira questao
+    inicio = 0
+    for i, linha in enumerate(linhas):
         linha_lower = linha.lower()
-        # Ignora linhas de navegacao
-        if any(nav in linha_lower for nav in NAV_IGNORAR):
-            continue
-        # Ignora linhas muito curtas (icones, numeros soltos)
-        if len(linha) < 4:
+        # Inicio quando achar o nome da atividade ou disciplina (ex: "Matematica - 2700")
+        if nome_atividade and nome_atividade.lower()[:20] in linha_lower:
+            inicio = i
+            break
+        # Fallback: começa em "Introducao" ou "Questao 01"
+        if "introdução" in linha_lower or "questão 01" in linha_lower or "questao 01" in linha_lower:
+            inicio = i
+            break
+    
+    # Extrai do inicio ate os marcadores de fim
+    resultado = []
+    for linha in linhas[inicio:]:
+        linha_lower = linha.lower()
+        if any(m in linha_lower for m in fim_marcadores):
+            break
+        # Ignora linhas muito curtas
+        if len(linha) < 3:
             continue
         resultado.append(linha)
+    
     return resultado
 
 
@@ -233,7 +253,7 @@ def main():
                     url_atv, conteudo_atv = abrir_atividade(page, nome)
 
                     if url_atv and conteudo_atv:
-                        linhas_filtradas = filtrar_conteudo(conteudo_atv)
+                        linhas_filtradas = filtrar_conteudo(conteudo_atv, nome)
                         titulo_msg = f"Atividade: {nome}\nLink: {url_atv}\n\n--- Conteudo ---"
                         enviar_telegram_longo(titulo_msg, linhas_filtradas)
                     else:
