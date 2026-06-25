@@ -78,11 +78,17 @@ def buscar_atividades(page):
                         "Home", "Status", "A Fazer", "Componente", "Turmas"]
 
     for i, linha in enumerate(linhas):
-        if linha in ("A Fazer", "Rascunho") and i + 1 < len(linhas):
-            nome = linhas[i + 1]
-            print(f"  -> Candidato encontrado: '{nome}'")
-            if nome and len(nome.strip()) > 3 and not any(p in nome for p in palavras_ignorar) and nome not in atividades:
-                atividades.append(nome)
+        if linha in ("A Fazer", "Rascunho"):
+            # Procura o nome nas proximas 3 linhas (ignora linhas curtas/numericas)
+            for j in range(i + 1, min(i + 4, len(linhas))):
+                nome = linhas[j]
+                print(f"  -> Candidato [{linha}] linha {j}: '{nome}'")
+                if (nome and len(nome.strip()) > 5
+                        and not any(p in nome for p in palavras_ignorar)
+                        and not nome.strip().isdigit()
+                        and nome not in atividades):
+                    atividades.append(nome)
+                    break
 
     print(f"  -> {len(atividades)} tarefa(s) em aberto: {atividades}")
 
