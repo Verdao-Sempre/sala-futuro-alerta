@@ -1,4 +1,4 @@
-﻿"""
+"""
 Sala do Futuro - Alerta de Atividades com Resposta Educacional
 GitHub Actions | Playwright | Telegram Bot API
 """
@@ -10,7 +10,6 @@ import hashlib
 import logging
 import sys
 from datetime import datetime
-from typing import Optional
 import requests
 from playwright.sync_api import sync_playwright, Page, TimeoutError as PlaywrightTimeout
 
@@ -52,19 +51,27 @@ def carregar_variaveis() -> dict:
 
 # --- 2. Login ---
 def fazer_login(page: Page, config: dict) -> None:
+    """Faz login no Sala do Futuro. Usa waits por elemento, nao networkidle."""
     log.info("Abrindo pagina de login...")
     page.goto(URL_LOGIN, wait_until="domcontentloaded")
-    page.wait_for_load_state("networkidle", timeout=30_000)
 
-    # SELETORES -- ajuste se o site mudar
-    campo_ra = page.get_by_placeholder("Ex.: 186735683")
-    campo_ra.wait_for(state="visible", timeout=15_000)
+    # Aguarda o campo de RA aparecer — indica que o formulario carregou
+    # AJUSTE O SELETOR se o placeholder mudar
+    try:
+        campo_ra = page.get_by_placeholder("Ex.: 186735683")
+        campo_ra.wait_for(state="visible", timeout=30_000)
+    except PlaywrightTimeout:
+        raise RuntimeError("Pagina de login nao carregou: campo RA nao encontrado em 30s.")
+
     campo_ra.fill(config["RA"])
+    log.info("RA preenchido.")
 
+    # AJUSTE O SELETOR se o placeholder do digito mudar
     campo_digito = page.get_by_placeholder("0").first
     campo_digito.wait_for(state="visible", timeout=10_000)
     campo_digito.fill(config["DIGITO"])
 
+    # AJUSTE O SELETOR se o placeholder da senha mudar
     campo_senha = page.get_by_placeholder("Digite sua senha")
     campo_senha.wait_for(state="visible", timeout=10_000)
     campo_senha.fill(config["SENHA"])
@@ -72,35 +79,36 @@ def fazer_login(page: Page, config: dict) -> None:
     btn = page.get_by_role("button", name="Acessar")
     btn.wait_for(state="visible", timeout=10_000)
     btn.click()
+    log.info("Botao Acessar clicado. Aguardando redirecionamento...")
 
+    # Aguarda sair da pagina de login
     try:
-        page.wait_for_url(lambda url: "login" not in url, timeout=20_000)
+        page.wait_for_url(lambda url: "login" not in url, timeout=30_000)
         log.info("Login realizado com sucesso.")
     except PlaywrightTimeout:
-        raise RuntimeError("Login falhou: pagina nao avancou apos clicar em Acessar.")
+        raise RuntimeError("Login falhou: pagina nao redirecionou apos 30s. Verifique as credenciais.")
 
 
 # --- 3. Listar atividades pendentes ---
 def listar_atividades_pendentes(page: Page) -> list:
     """
     Acessa /tarefas e retorna lista de dicts com titulo, url, disciplina, prazo.
-    SELETORES -- ajuste conforme o HTML real do site.
+
+    AJUSTE OS SELETORES conforme o HTML real do site.
     Inspecione no Chrome DevTools (F12) para encontrar os seletores corretos.
     """
     log.info("Acessando pagina de tarefas...")
     page.goto(URL_TAREFAS, wait_until="domcontentloaded")
-    page.wait_for_load_state("networkidle", timeout=30_000)
+
+    # Aguarda o corpo da pagina ter conteudo relevante (sem networkidle)
+    try:
+        page.wait_for_function("document.body.innerText.length > 100", timeout=30_000)
+    except PlaywrightTimeout:
+        log.warning("Pagina de tarefas demorou para carregar conteudo.")
 
     atividades = []
 
-    try:
-        page.wait_for_selector(
-            "a[href*='/tarefa'], a[href*='/atividade'], .tarefa, .atividade",
-            timeout=10_000
-        )
-    except PlaywrightTimeout:
-        log.warning("Seletor de atividades nao encontrado. Usando fallback de texto.")
-
+    # Tenta localizar links de atividades — AJUSTE ESTE SELETOR
     links = page.locator("a[href*='/tarefa'], a[href*='/atividade'], a[href*='/task']").all()
 
     if links:
@@ -134,6 +142,7 @@ def listar_atividades_pendentes(page: Page) -> list:
             except Exception as exc:
                 log.debug("Erro ao processar link de atividade: %s", exc)
     else:
+        # Fallback: leitura de texto simples
         log.info("Nenhum link encontrado via seletor. Usando leitura de texto.")
         corpo = page.inner_text("body")
         linhas = [l.strip() for l in corpo.split("\n") if l.strip()]
@@ -164,7 +173,8 @@ def abrir_atividade(page: Page, url: str) -> bool:
     try:
         log.info("Abrindo atividade: %s", url)
         page.goto(url, wait_until="domcontentloaded")
-        page.wait_for_load_state("networkidle", timeout=30_000)
+        # Aguarda conteudo minimo aparecer, sem networkidle
+        page.wait_for_function("document.body.innerText.length > 50", timeout=20_000)
         return True
     except PlaywrightTimeout:
         log.warning("Timeout ao abrir atividade: %s", url)
@@ -178,7 +188,8 @@ def abrir_atividade(page: Page, url: str) -> bool:
 def extrair_conteudo_atividade(page: Page) -> dict:
     """
     Extrai titulo, disciplina, prazo, enunciado, alternativas e textos de apoio.
-    SELETORES -- ajuste conforme o HTML real do Sala do Futuro.
+
+    AJUSTE OS SELETORES conforme o HTML real do Sala do Futuro.
     Inspecione cada elemento no DevTools e substitua os seletores abaixo.
     """
     conteudo = {
@@ -187,7 +198,6 @@ def extrair_conteudo_atividade(page: Page) -> dict:
         "texto_completo": "", "leitura_ok": False
     }
     try:
-        # Titulo -- AJUSTE O SELETOR
         for sel in ["h1", "h2.titulo", ".titulo-atividade", "[class*='title']"]:
             try:
                 el = page.locator(sel).first
@@ -197,7 +207,6 @@ def extrair_conteudo_atividade(page: Page) -> dict:
             except Exception:
                 pass
 
-        # Disciplina -- AJUSTE O SELETOR
         for sel in [".disciplina", "[class*='subject']", "[class*='component']", ".componente"]:
             try:
                 el = page.locator(sel).first
@@ -207,7 +216,6 @@ def extrair_conteudo_atividade(page: Page) -> dict:
             except Exception:
                 pass
 
-        # Prazo -- AJUSTE O SELETOR
         for sel in [".prazo", ".data-entrega", "[class*='deadline']", "[class*='due']"]:
             try:
                 el = page.locator(sel).first
@@ -217,7 +225,6 @@ def extrair_conteudo_atividade(page: Page) -> dict:
             except Exception:
                 pass
 
-        # Enunciado -- AJUSTE O SELETOR
         for sel in [".enunciado", ".questao", ".conteudo-atividade", "[class*='statement']",
                     "[class*='question']", "p.descricao", ".descricao"]:
             try:
@@ -228,7 +235,6 @@ def extrair_conteudo_atividade(page: Page) -> dict:
             except Exception:
                 pass
 
-        # Alternativas -- AJUSTE O SELETOR
         for sel in [".alternativa", "[class*='option']", "[class*='choice']", "li.item-alternativa"]:
             try:
                 els = page.locator(sel).all()
@@ -239,7 +245,6 @@ def extrair_conteudo_atividade(page: Page) -> dict:
             except Exception:
                 pass
 
-        # Textos de apoio -- AJUSTE O SELETOR
         for sel in [".texto-apoio", "[class*='support']", ".leitura", "[class*='reading']"]:
             try:
                 els = page.locator(sel).all()
@@ -289,10 +294,6 @@ def gerar_hash_conteudo(conteudo: dict) -> str:
 
 # --- 8. Resposta educacional ---
 def gerar_resposta_educacional(conteudo: dict, api_key: str) -> dict:
-    """
-    Se ANTHROPIC_API_KEY configurada: chama Claude Haiku para gerar explicacao.
-    Se nao configurada: retorna aviso de que a resposta automatica esta desativada.
-    """
     resultado = {
         "resposta_sugerida": "",
         "explicacao": "",
@@ -391,8 +392,8 @@ def enviar_telegram(mensagem: str, config: dict) -> None:
 
 
 def formatar_mensagem_atividade(atividade: dict, conteudo: dict, resposta: dict) -> str:
-    icone = {"alto": "OK", "medio": "ATENCAO", "baixo": "DUVIDA"}.get(
-        resposta.get("nivel_confianca", "baixo"), "DUVIDA"
+    icone = {"alto": "OK", "medio": "ATENCAO", "baixo": "INCERTO"}.get(
+        resposta.get("nivel_confianca", "baixo"), "INCERTO"
     )
     partes = ["<b>Nova atividade encontrada</b>\n"]
     partes.append(f"<b>Titulo:</b>\n{conteudo['titulo'] or atividade['titulo']}\n")
@@ -489,8 +490,8 @@ def main():
                     if not conteudo["leitura_ok"] and not abriu:
                         mensagem = (
                             f"Atividade encontrada, mas nao lida\n\n"
-                            f"<b>Titulo:</b> {atividade['titulo']}\n"
-                            f"<b>Link:</b> {atividade['url']}\n\n"
+                            f"Titulo: {atividade['titulo']}\n"
+                            f"Link: {atividade['url']}\n\n"
                             "Nao foi possivel abrir a atividade para leitura completa."
                         )
                     else:
@@ -514,7 +515,7 @@ def main():
             log.info("Nenhuma atividade nova ou alterada.")
             if ENVIAR_OK:
                 enviar_telegram(
-                    f"Sala do Futuro\n\nNenhuma atividade nova.\n"
+                    f"Sala do Futuro - OK\n\nNenhuma atividade nova.\n"
                     f"Total em aberto: {len(atividades)}\nHorario: {agora}",
                     config
                 )
