@@ -29,8 +29,8 @@ URL_TAREFAS    = "https://saladofuturo.educacao.sp.gov.br/tarefas"
 TELEGRAM_MAX   = int(os.environ.get("TELEGRAM_MAX_LENGTH", "4000"))
 ENVIAR_OK      = os.environ.get("ENVIAR_OK", "false").lower() == "true"
 IS_CLOUD       = os.environ.get("GITHUB_ACTIONS") == "true"
+MODO_DEBUG     = os.environ.get("MODO_DEBUG", "false").lower() == "true"
 
-# Titulos que indicam navegacao ou cabecalho, nao atividades reais
 TITULOS_IGNORAR = {
     "tarefa sp", "home", "status", "a fazer", "componente", "turmas",
     "entregar", "tarefas", "atividades", "menu", "inicio", "voltar"
@@ -56,7 +56,6 @@ def carregar_variaveis() -> dict:
 
 
 def _e_titulo_valido(titulo: str) -> bool:
-    """Retorna False se o titulo parecer navegacao, cabecalho ou texto generico."""
     t = titulo.strip().lower()
     if len(t) < 4:
         return False
@@ -64,7 +63,6 @@ def _e_titulo_valido(titulo: str) -> bool:
         return False
     if any(ignorar in t for ignorar in TITULOS_IGNORAR):
         return False
-    # Filtra titulos que sao so datas ou numeros
     if re.fullmatch(r'[\d/\-\s:]+', t):
         return False
     return True
@@ -78,12 +76,16 @@ def _normalizar_url(href: str) -> str:
     return f"https://saladofuturo.educacao.sp.gov.br{href}"
 
 
+def _e_url_especifica(url: str) -> bool:
+    """Retorna True se a URL for de uma atividade especifica, nao a pagina de listagem."""
+    return bool(url) and url.rstrip("/") != URL_TAREFAS.rstrip("/")
+
+
 # --- 2. Login ---
 def fazer_login(page: Page, config: dict) -> None:
     log.info("Abrindo pagina de login...")
     page.goto(URL_LOGIN, wait_until="domcontentloaded")
 
-    # AJUSTE O SELETOR se o placeholder mudar
     try:
         campo_ra = page.get_by_placeholder("Ex.: 186735683")
         campo_ra.wait_for(state="visible", timeout=30_000)
@@ -92,12 +94,10 @@ def fazer_login(page: Page, config: dict) -> None:
 
     campo_ra.fill(config["RA"])
 
-    # AJUSTE O SELETOR se o placeholder do digito mudar
     campo_digito = page.get_by_placeholder("0").first
     campo_digito.wait_for(state="visible", timeout=10_000)
     campo_digito.fill(config["DIGITO"])
 
-    # AJUSTE O SELETOR se o placeholder da senha mudar
     campo_senha = page.get_by_placeholder("Digite sua senha")
     campo_senha.wait_for(state="visible", timeout=10_000)
     campo_senha.fill(config["SENHA"])
@@ -111,51 +111,97 @@ def fazer_login(page: Page, config: dict) -> None:
         page.wait_for_url(lambda url: "login" not in url, timeout=30_000)
         log.info("Login realizado com sucesso.")
     except PlaywrightTimeout:
-        raise RuntimeError("Login falhou: pagina nao redirecionou apos 30s. Verifique as credenciais.")
+        raise RuntimeError("Login falhou: pagina nao redirecionou apos 30s.")
 
 
-# --- 3. Listar atividades pendentes ---
+# --- 3. Diagnostico da pagina de tarefas ---
+def diagnosticar_pagina(page: Page, config: dict) -> None:
+    """
+    Modo debug: envia para o Telegram um dump dos links e texto da pagina
+    para ajudar a identificar os seletores corretos.
+    """
+    log.info("[DEBUG] Coletando diagnostico da pagina...")
+
+    # Todos os links da pagina
+    todos_links = page.locator("a[href]").all()
+    links_info = []
+    for link in todos_links[:40]:
+        try:
+            href = link.get_attribute("href") or ""
+            texto = link.inner_text().strip()[:60]
+            if href and texto:
+                links_info.append(f"  [{texto}] -> {href}")
+        except Exception:
+            pass
+
+    # Primeiras linhas do corpo
+    corpo = page.inner_text("body").strip()
+    primeiras_linhas = "\n".join(
+        [l for l in corpo.split("\n") if l.strip()][:40]
+    )
+
+    msg_debug = (
+        "<b>[DEBUG] Links encontrados na pagina de tarefas:</b>\n"
+        + "\n".join(links_info[:25])
+        + "\n\n<b>Primeiras linhas do texto da pagina:</b>\n"
+        + primeiras_linhas[:1500]
+    )
+    enviar_telegram(msg_debug, config)
+    log.info("[DEBUG] Diagnostico enviado ao Telegram.")
+
+
+# --- 4. Listar atividades pendentes ---
 def listar_atividades_pendentes(page: Page) -> list:
-    """
-    Acessa /tarefas e retorna lista de atividades com titulo, url, disciplina, prazo.
-
-    AJUSTE OS SELETORES conforme o HTML real do site (inspecione com F12).
-    """
     log.info("Acessando pagina de tarefas...")
     page.goto(URL_TAREFAS, wait_until="domcontentloaded")
 
     try:
         page.wait_for_function("document.body.innerText.length > 100", timeout=30_000)
     except PlaywrightTimeout:
-        log.warning("Pagina de tarefas demorou para carregar conteudo.")
+        log.warning("Pagina de tarefas demorou para carregar.")
 
     atividades = []
 
-    # Seletor de links de atividades especificas.
-    # Usa /tarefa/ e /atividade/ com barra para evitar capturar /tarefas (pagina de listagem).
-    # AJUSTE conforme os hrefs reais do site.
-    seletores_link = (
-        "a[href*='/tarefa/'], "
-        "a[href*='/atividade/'], "
-        "a[href*='/task/'], "
-        "a[href*='/questao/'], "
-        "a[href*='/exercicio/']"
-    )
-    links = page.locator(seletores_link).all()
+    # Tenta varios seletores, do mais especifico ao mais generico
+    # AJUSTE conforme os hrefs reais do site (use o debug para ver)
+    seletores_tentativa = [
+        "a[href*='/tarefa/']",
+        "a[href*='/atividade/']",
+        "a[href*='/task/']",
+        "a[href*='/tarefa']",      # mais amplo: captura /tarefa123 etc
+        "a[href*='/questao/']",
+        "a[href*='/exercicio/']",
+    ]
+
+    links = []
+    seletor_usado = None
+    for sel in seletores_tentativa:
+        encontrados = page.locator(sel).all()
+        # Filtra links que nao sejam a propria pagina de tarefas
+        validos = []
+        for l in encontrados:
+            try:
+                href = l.get_attribute("href") or ""
+                url_norm = _normalizar_url(href)
+                if _e_url_especifica(url_norm):
+                    validos.append(l)
+            except Exception:
+                pass
+        if validos:
+            links = validos
+            seletor_usado = sel
+            log.info("Seletor '%s' encontrou %d links.", sel, len(links))
+            break
 
     if links:
-        log.info("Encontrados %d links de atividades via seletor.", len(links))
         for link in links:
             try:
                 titulo = link.inner_text().strip()
                 href = link.get_attribute("href") or ""
                 url_ativ = _normalizar_url(href)
 
-                # Descarta se URL for a pagina generica de tarefas
-                if url_ativ.rstrip("/") == URL_TAREFAS.rstrip("/"):
-                    continue
                 if not _e_titulo_valido(titulo):
-                    log.debug("Titulo ignorado (navegacao/header): %r", titulo)
+                    log.debug("Titulo ignorado: %r", titulo)
                     continue
 
                 card = link.locator(
@@ -180,10 +226,16 @@ def listar_atividades_pendentes(page: Page) -> list:
             except Exception as exc:
                 log.debug("Erro ao processar link: %s", exc)
     else:
-        # Fallback: leitura de texto simples
-        log.info("Nenhum link especifico encontrado. Usando leitura de texto.")
+        # Fallback: leitura linha a linha do texto da pagina
+        log.info("Nenhum link especifico encontrado. Usando leitura de texto (fallback).")
         corpo = page.inner_text("body")
         linhas = [l.strip() for l in corpo.split("\n") if l.strip()]
+
+        log.info("[FALLBACK] Total de linhas na pagina: %d", len(linhas))
+        if MODO_DEBUG:
+            for idx, linha in enumerate(linhas[:60]):
+                log.info("[FALLBACK] linha[%d]: %r", idx, linha)
+
         for i, linha in enumerate(linhas):
             if linha == "A Fazer" and i + 1 < len(linhas):
                 nome = linhas[i + 1]
@@ -191,7 +243,6 @@ def listar_atividades_pendentes(page: Page) -> list:
                     atividades.append({"titulo": nome, "url": URL_TAREFAS,
                                        "disciplina": "", "prazo": ""})
 
-    # Remove duplicatas por titulo
     vistos: set = set()
     resultado = []
     for a in atividades:
@@ -199,14 +250,13 @@ def listar_atividades_pendentes(page: Page) -> list:
             vistos.add(a["titulo"])
             resultado.append(a)
 
-    log.info("%d atividade(s) pendente(s) encontrada(s).", len(resultado))
+    log.info("%d atividade(s) encontrada(s).", len(resultado))
     return resultado
 
 
-# --- 4. Abrir atividade ---
+# --- 5. Abrir atividade ---
 def abrir_atividade(page: Page, url: str) -> bool:
-    """Retorna False se URL for generica ou se a navegacao falhar."""
-    if not url or url.rstrip("/") == URL_TAREFAS.rstrip("/"):
+    if not _e_url_especifica(url):
         return False
     try:
         log.info("Abrindo atividade: %s", url)
@@ -221,13 +271,8 @@ def abrir_atividade(page: Page, url: str) -> bool:
         return False
 
 
-# --- 5. Extrair conteudo ---
+# --- 6. Extrair conteudo ---
 def extrair_conteudo_atividade(page: Page) -> dict:
-    """
-    Extrai titulo, disciplina, prazo, enunciado, alternativas e textos de apoio.
-
-    AJUSTE OS SELETORES conforme o HTML real do Sala do Futuro (inspecione com F12).
-    """
     conteudo = {
         "titulo": "", "disciplina": "", "prazo": "",
         "enunciado": "", "alternativas": [], "textos_apoio": [],
@@ -300,13 +345,13 @@ def extrair_conteudo_atividade(page: Page) -> dict:
     return conteudo
 
 
-# --- 6. Identificador unico ---
+# --- 7. Identificador unico ---
 def gerar_id_atividade(atividade: dict) -> str:
     chave = f"{atividade['titulo']}|{atividade['url']}"
     return hashlib.sha256(chave.encode()).hexdigest()[:16]
 
 
-# --- 7. Estado persistente ---
+# --- 8. Estado persistente ---
 def carregar_estado() -> dict:
     if os.path.exists(ARQUIVO_ESTADO):
         try:
@@ -328,7 +373,7 @@ def gerar_hash_conteudo(conteudo: dict) -> str:
     return hashlib.md5(texto.encode()).hexdigest()
 
 
-# --- 8. Resposta educacional ---
+# --- 9. Resposta educacional ---
 def gerar_resposta_educacional(conteudo: dict, api_key: str) -> dict:
     resultado = {
         "resposta_sugerida": "",
@@ -336,11 +381,9 @@ def gerar_resposta_educacional(conteudo: dict, api_key: str) -> dict:
         "nivel_confianca": "baixo",
         "observacao": ""
     }
-
     if not api_key:
         resultado["observacao"] = (
-            "Resposta automatica nao gerada: ANTHROPIC_API_KEY nao configurada. "
-            "Configure o secret para ativar esta funcionalidade."
+            "Resposta automatica nao gerada: ANTHROPIC_API_KEY nao configurada."
         )
         return resultado
 
@@ -359,16 +402,16 @@ def gerar_resposta_educacional(conteudo: dict, api_key: str) -> dict:
     prompt_sistema = (
         "Voce e um tutor educacional que ajuda estudantes a entender atividades escolares. "
         "Sua funcao e EXPLICAR e ENSINAR, nunca apenas dar o gabarito seco.\n\n"
-        "Regras obrigatorias:\n"
-        "- Se a atividade parecer prova formal ou avaliacao, sinalize claramente.\n"
-        "- Se houver alternativas, indique a mais provavel e justifique com base no texto.\n"
-        "- Se for discursiva, escreva uma resposta modelo em linguagem simples.\n"
+        "Regras:\n"
+        "- Se parecer prova formal, sinalize claramente.\n"
+        "- Se houver alternativas, indique a mais provavel e justifique.\n"
+        "- Se for discursiva, escreva resposta modelo em linguagem simples.\n"
         "- Se houver calculo, mostre o passo a passo.\n"
         "- Se for interpretacao de texto, explique onde a resposta aparece.\n"
-        "- Se o conteudo estiver incompleto, diga isso claramente.\n"
-        "- NUNCA invente informacoes que nao estejam na atividade.\n"
+        "- Se o conteudo estiver incompleto, diga isso.\n"
+        "- NUNCA invente informacoes.\n"
         "- Responda sempre em portugues brasileiro.\n\n"
-        "Responda em JSON com este formato exato:\n"
+        "Responda em JSON:\n"
         '{"resposta_sugerida":"...","explicacao":"...","nivel_confianca":"alto|medio|baixo","observacao":"..."}'
     )
 
@@ -398,17 +441,17 @@ def gerar_resposta_educacional(conteudo: dict, api_key: str) -> dict:
             resultado["resposta_sugerida"] = texto_resp[:500]
     except requests.HTTPError as exc:
         log.warning("Erro na API Anthropic: %s", exc)
-        resultado["observacao"] = f"Erro ao gerar resposta automatica: {exc}"
+        resultado["observacao"] = f"Erro ao gerar resposta: {exc}"
     except Exception as exc:
         log.warning("Erro inesperado na geracao de resposta: %s", exc)
         resultado["observacao"] = "Erro inesperado ao gerar resposta educacional."
     return resultado
 
 
-# --- 9. Telegram ---
+# --- 10. Telegram ---
 def enviar_telegram(mensagem: str, config: dict) -> None:
     if not config.get("TELEGRAM_TOKEN") or not config.get("TELEGRAM_CHAT_ID"):
-        log.warning("Telegram nao configurado. Mensagem:\n%s", mensagem)
+        log.warning("Telegram nao configurado.\n%s", mensagem)
         return
     if len(mensagem) > TELEGRAM_MAX:
         mensagem = mensagem[:TELEGRAM_MAX - 50] + "\n\n[mensagem truncada]"
@@ -456,7 +499,7 @@ def formatar_mensagem_atividade(atividade: dict, conteudo: dict, resposta: dict)
     return "\n".join(partes)
 
 
-# --- 10. Main ---
+# --- 11. Main ---
 def main():
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
     log.info("=" * 50)
@@ -480,10 +523,17 @@ def main():
                     fazer_login(page, config)
                 except RuntimeError as exc:
                     log.error("Falha no login: %s", exc)
-                    enviar_telegram(
-                        f"Erro critico - Sala do Futuro\n\nFalha no login: {exc}", config
-                    )
+                    enviar_telegram(f"Erro critico\n\nFalha no login: {exc}", config)
                     sys.exit(1)
+
+                # Modo debug: envia dump da pagina para o Telegram
+                if MODO_DEBUG:
+                    page.goto(URL_TAREFAS, wait_until="domcontentloaded")
+                    try:
+                        page.wait_for_function("document.body.innerText.length > 100", timeout=30_000)
+                    except PlaywrightTimeout:
+                        pass
+                    diagnosticar_pagina(page, config)
 
                 try:
                     atividades = listar_atividades_pendentes(page)
@@ -524,9 +574,8 @@ def main():
 
                     resposta = gerar_resposta_educacional(conteudo, config["ANTHROPIC_API_KEY"])
 
-                    # So envia "nao lida" se tiver URL especifica — evita spam de links genericos
                     if not abriu and not conteudo["leitura_ok"]:
-                        if atividade["url"] != URL_TAREFAS:
+                        if _e_url_especifica(atividade["url"]):
                             mensagem = (
                                 f"Atividade encontrada, mas nao lida\n\n"
                                 f"Titulo: {atividade['titulo']}\n"
@@ -535,9 +584,7 @@ def main():
                             )
                             enviar_telegram(mensagem, config)
                         else:
-                            log.warning(
-                                "Atividade sem URL especifica ignorada: %s", atividade["titulo"]
-                            )
+                            log.warning("Atividade sem URL especifica ignorada: %s", atividade["titulo"])
                     else:
                         mensagem = formatar_mensagem_atividade(atividade, conteudo, resposta)
                         if ja_processada and conteudo_mudou:
