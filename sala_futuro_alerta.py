@@ -16,7 +16,7 @@ SENHA            = os.environ.get("SENHA",            "mj13112008")
 TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
-ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY", "")
 
 ARQUIVO_ATIVIDADES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atividades_salvas.json")
 
@@ -197,11 +197,11 @@ def filtrar_conteudo(texto_bruto, nome_atividade=""):
 
 
 def responder_com_ia(conteudo_atividade, nome_atividade):
-    """Envia o conteudo da atividade para o Claude e retorna as respostas."""
-    if not ANTHROPIC_API_KEY:
+    """Envia o conteudo da atividade para o GPT e retorna as respostas."""
+    if not OPENAI_API_KEY:
         return None
 
-    print("  -> Enviando para IA...")
+    print("  -> Enviando para GPT...")
     prompt = f"""Voce e um assistente que ajuda estudantes do ensino medio brasileiro.
 Abaixo esta o conteudo completo de uma atividade escolar chamada "{nome_atividade}".
 Leia com atencao e responda CADA QUESTAO de forma direta e objetiva.
@@ -215,28 +215,27 @@ CONTEUDO DA ATIVIDADE:
 
     try:
         resp = requests.post(
-            "https://api.anthropic.com/v1/messages",
+            "https://api.openai.com/v1/chat/completions",
             headers={
-                "x-api-key": ANTHROPIC_API_KEY,
-                "anthropic-version": "2023-06-01",
-                "content-type": "application/json"
+                "Authorization": f"Bearer {OPENAI_API_KEY}",
+                "Content-Type": "application/json"
             },
             json={
-                "model": "claude-haiku-4-5-20251001",
+                "model": "gpt-4o-mini",
                 "max_tokens": 2048,
                 "messages": [{"role": "user", "content": prompt}]
             },
             timeout=60
         )
         if resp.status_code == 200:
-            resposta = resp.json()["content"][0]["text"]
-            print("  -> IA respondeu!")
+            resposta = resp.json()["choices"][0]["message"]["content"]
+            print("  -> GPT respondeu!")
             return resposta
         else:
-            print(f"  -> Erro IA: {resp.status_code}")
+            print(f"  -> Erro GPT: {resp.status_code} - {resp.text[:200]}")
             return None
     except Exception as e:
-        print(f"  -> Falha na IA: {e}")
+        print(f"  -> Falha no GPT: {e}")
         return None
 
 def enviar_telegram(mensagem):
