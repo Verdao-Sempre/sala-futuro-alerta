@@ -9,6 +9,7 @@ import time
 import requests
 from playwright.sync_api import sync_playwright
 from datetime import datetime
+import unicodedata
 
 RA               = os.environ.get("RA",               "000110134488")
 DIGITO           = os.environ.get("DIGITO",           "x")
@@ -322,46 +323,96 @@ def clicar_checkbox_radio(page, letra, num_questao):
     return clicou
 
 
+def _norm(s):
+    """Remove acentos e normaliza para comparacao flexivel."""
+    nfkd = unicodedata.normalize("NFKD", s.lower())
+    return "".join(c for c in nfkd if not unicodedata.combining(c))
+
+
 def clicar_dropdown(page, indice, termo):
-    """Abre o dropdown de indice dado e seleciona o termo correto."""
+    """
+    Abre o dropdown de indice dado e seleciona o termo usando matching flexivel
+    (ignora acentos, maiusculas/minusculas e correspondencia parcial).
+    """
+    termo_norm = _norm(termo)
+
     try:
-        # Tenta select nativo primeiro
+        # 1) Tenta select nativo
         selects = page.query_selector_all("select")
         if indice < len(selects):
-            try:
-                selects[indice].select_option(label=termo)
-                print(f"    -> Select {indice+1}: '{termo}'")
-                time.sleep(0.3)
-                return True
-            except Exception:
-                pass
+            opcoes = selects[indice].query_selector_all("option")
+            for opcao in opcoes:
+                texto = opcao.inner_text().strip()
+                t_norm = _norm(texto)
+                if t_norm == termo_norm or termo_norm in t_norm or t_norm in termo_norm:
+                    try:
+                        selects[indice].select_option(value=opcao.get_attribute("value"))
+                    except Exception:
+                        selects[indice].select_option(label=texto)
+                    print(f"    -> Select {indice+1}: '{texto}'")
+                    time.sleep(0.3)
+                    return True
 
-        # Dropdown customizado React
-        cbs = page.query_selector_all('[role="combobox"], [aria-haspopup="listbox"], button[aria-expanded]')
+        # 2) Dropdown customizado React
+        cbs = page.query_selector_all(
+            '[role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="true"]')
         if indice >= len(cbs):
             print(f"    -> Combobox {indice+1} nao encontrado (total: {len(cbs)})")
             return False
 
         cbs[indice].scroll_into_view_if_needed()
         cbs[indice].click()
-        time.sleep(0.7)
+        time.sleep(1.0)  # aguarda animacao do dropdown
 
-        # Tenta clicar na opcao
-        try:
-            page.get_by_role("option", name=termo).click(timeout=2000)
-            print(f"    -> Dropdown {indice+1}: '{termo}'")
-            time.sleep(0.3)
+        # 3) JS: percorre TODOS os elementos visiveis buscando o texto com matching flexivel
+        clicou = page.evaluate("""
+        (termoNorm) => {
+            function norm(s) {
+                return s.toLowerCase()
+                    .normalize("NFD")
+                    .replace(/[\u0300-\u036f]/g, "");
+            }
+            // Seletores em ordem de especificidade para componentes React/MUI
+            const seletores = [
+                '[role="option"]',
+                '.MuiMenuItem-root',
+                '.MuiListItem-root',
+                '[class*="MenuItem"]',
+                '[class*="option"]',
+                '[class*="Option"]',
+                '[class*="item"]',
+                '[class*="Item"]',
+                '[role="listbox"] *',
+                'ul[role] li',
+                'li'
+            ];
+            for (const sel of seletores) {
+                const els = Array.from(document.querySelectorAll(sel));
+                for (const el of els) {
+                    if (el.offsetParent === null) continue;
+                    const texto = (el.innerText || el.textContent || "").trim();
+                    if (!texto) continue;
+                    const tn = norm(texto);
+                    if (tn === termoNorm || tn.includes(termoNorm) || termoNorm.includes(tn)) {
+                        el.click();
+                        return texto;
+                    }
+                }
+            }
+            return null;
+        }
+        """, termo_norm)
+
+        if clicou:
+            print(f"    -> Dropdown {indice+1}: '{clicou}' (JS match)")
+            time.sleep(0.4)
             return True
-        except Exception:
-            try:
-                page.locator(f'[role="listbox"] >> text={termo}').first.click(timeout=1500)
-                print(f"    -> Dropdown {indice+1}: '{termo}' (listbox)")
-                time.sleep(0.3)
-                return True
-            except Exception as e2:
-                print(f"    -> Opcao '{termo}' nao encontrada no dropdown {indice+1}: {e2}")
-                page.keyboard.press("Escape")
-                return False
+        else:
+            print(f"    -> Opcao '{termo}' nao encontrada no dropdown {indice+1}")
+            page.keyboard.press("Escape")
+            time.sleep(0.3)
+            return False
+
     except Exception as e:
         print(f"    -> Erro dropdown {indice+1}: {e}")
         return False
