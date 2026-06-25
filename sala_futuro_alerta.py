@@ -184,17 +184,17 @@ def listar_atividades_pendentes(page: Page) -> list:
 
     # Tenta encontrar cards de tarefas por seletores comuns
     # AJUSTE estes seletores apos ver o debug com tarefas reais na pagina
+    # Seletores MUI para cards de tarefa.
+    # MuiMenuItem-root sao itens de NAVEGACAO — excluir.
+    # Cards de tarefa serao MuiCard, MuiPaper ou MuiListItem sem ser MenuItem.
     seletores_card = [
-        "[class*='task-item']",
-        "[class*='tarefa-item']",
+        "[class*='MuiCard-root']",
+        "[class*='MuiPaper-root'][class*='MuiCard']",
+        "li[class*='MuiListItem-root']:not([class*='MuiMenuItem-root'])",
+        "div[class*='MuiListItem-root']",
+        "[class*='MuiPaper-elevation']",
         "[class*='task-card']",
         "[class*='tarefa-card']",
-        "[class*='activity-item']",
-        "[class*='atividade-item']",
-        "li[class*='task']",
-        "li[class*='tarefa']",
-        "li[class*='item']",
-        "[role='listitem']",
     ]
 
     cards_encontrados = []
@@ -303,9 +303,11 @@ def abrir_atividade(page: Page, titulo: str) -> bool:
 
         # Aguarda o botao Prosseguir aparecer
         # AJUSTE o seletor se o texto do botao for diferente
+        # Botao MUI — pode ser MuiButton ou MuiButtonBase com texto Prosseguir
         btn_prosseguir = page.locator(
+            "button[class*='MuiButton']:has-text('Prosseguir'), "
+            "button[class*='MuiButtonBase']:has-text('Prosseguir'), "
             "button:has-text('Prosseguir'), "
-            "[class*='button']:has-text('Prosseguir'), "
             "a:has-text('Prosseguir')"
         ).first
         btn_prosseguir.wait_for(state="visible", timeout=10_000)
@@ -336,7 +338,7 @@ def extrair_conteudo_atividade(page: Page) -> dict:
         "texto_completo": "", "leitura_ok": False
     }
     try:
-        for sel in ["h1", "h2", "[class*='title']", "[class*='titulo']"]:
+        for sel in ["h1", "h2", "[class*='MuiTypography-h']", "[class*='title']", "[class*='titulo']"]:
             try:
                 el = page.locator(sel).first
                 if el.is_visible():
@@ -366,7 +368,8 @@ def extrair_conteudo_atividade(page: Page) -> dict:
             except Exception:
                 pass
 
-        for sel in [".enunciado", ".questao", "[class*='statement']", "[class*='question']",
+        for sel in [".enunciado", ".questao", "[class*='MuiTypography-body']",
+                    "[class*='statement']", "[class*='question']",
                     "[class*='enunciado']", "[class*='descricao']", "p"]:
             try:
                 el = page.locator(sel).first
