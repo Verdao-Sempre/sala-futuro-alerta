@@ -266,24 +266,33 @@ CONTEUDO DA ATIVIDADE "{nome_atividade}":
     return resposta
 
 
-def obter_respostas_json(conteudo_atividade, nome_atividade):
+def obter_respostas_json(conteudo_atividade, nome_atividade, opcoes_dropdowns=None):
     """Retorna JSON estruturado para clicar automaticamente."""
     print(f"  -> IA (JSON para cliques)...")
+
+    # Monta bloco de opcoes para guiar a IA (antes do f-string)
+    opcoes_info = ""
+    if opcoes_dropdowns:
+        opcoes_info = "OPCOES DISPONIVEIS NOS DROPDOWNS (use EXATAMENTE um destes textos por lacuna):\n"
+        for idx, ops in sorted(opcoes_dropdowns.items()):
+            opcoes_info += f"  Dropdown {idx+1}: {ops}\n"
+        opcoes_info += "\n"
+
     prompt = f"""Analise esta atividade escolar brasileira do ensino medio.
 Retorne SOMENTE JSON valido, sem markdown, sem texto extra:
 
 {{
   "1": {{"tipo": "multipla_escolha", "respostas": ["B", "D"]}},
   "2": {{"tipo": "unica_escolha", "respostas": ["C"]}},
-  "3": {{"tipo": "dropdown", "respostas": ["opcao A", "opcao B", "opcao C"]}}
+  "3": {{"tipo": "dropdown", "respostas": ["termo exato da opcao 1", "termo exato da opcao 2"]}}
 }}
 
 Tipos:
 - multipla_escolha: checkboxes, pode ter varias letras corretas
 - unica_escolha: radio button, so uma letra
-- dropdown: completar lacunas no texto, lista de termos na ordem das lacunas
+- dropdown: preencher lacunas - use EXATAMENTE os termos das opcoes listadas abaixo
 
-CONTEUDO "{nome_atividade}":
+{opcoes_info}CONTEUDO "{nome_atividade}":
 {conteudo_atividade[:5000]}
 
 JSON:"""
@@ -470,6 +479,46 @@ def clicar_dropdown(page, indice, termo):
         return False
 
 
+
+def extrair_opcoes_dropdowns(page):
+    """Abre cada combobox, le as opcoes e fecha. Retorna {indice: [opcoes]}."""
+    opcoes_por_dd = {}
+    try:
+        cbs = page.query_selector_all(
+            '[role="combobox"], [aria-haspopup="listbox"], [aria-haspopup="true"]')
+        print(f"  -> Encontrado {len(cbs)} dropdown(s) na pagina")
+        for i, cb in enumerate(cbs):
+            try:
+                cb.scroll_into_view_if_needed()
+                time.sleep(0.3)
+                cb.click()
+                time.sleep(1.2)
+                opcoes = page.evaluate("""
+                () => {
+                    const sels = ['[role="option"]', '.MuiMenuItem-root', 'li[data-value]',
+                                  '[class*="MenuItem"]', '[class*="option"]'];
+                    for (const s of sels) {
+                        const els = Array.from(document.querySelectorAll(s))
+                            .filter(e => e.offsetWidth > 0 || e.offsetHeight > 0);
+                        if (els.length > 0)
+                            return els.map(e => (e.innerText || e.textContent || '').trim()).filter(t => t);
+                    }
+                    return [];
+                }
+                """)
+                if opcoes:
+                    opcoes_por_dd[i] = opcoes
+                    print(f"  -> Dropdown {i+1} opcoes: {opcoes}")
+                page.keyboard.press("Escape")
+                time.sleep(0.5)
+            except Exception as e:
+                print(f"  -> Erro ao ler dropdown {i+1}: {e}")
+                try: page.keyboard.press("Escape")
+                except: pass
+    except Exception as e:
+        print(f"  -> Erro ao extrair dropdowns: {e}")
+    return opcoes_por_dd
+
 def clicar_respostas_pagina(page, respostas_json):
     """Clica nas respostas corretas baseado no JSON da IA. Retorna total de cliques."""
     if not respostas_json:
@@ -608,8 +657,11 @@ def main():
                         linhas_filtradas = filtrar_conteudo(conteudo_atv, nome)
                         conteudo_limpo = "\n".join(linhas_filtradas)
 
-                        # Passo 1: JSON de respostas para clicar
-                        respostas_json = obter_respostas_json(conteudo_limpo, nome)
+                        # Passo 1: Extrai opcoes reais dos dropdowns para guiar a IA
+                        opcoes_dd = extrair_opcoes_dropdowns(page)
+
+                        # Passo 2: JSON de respostas para clicar
+                        respostas_json = obter_respostas_json(conteudo_limpo, nome, opcoes_dd)
 
                         cliques = 0
                         rascunho_salvo = False
