@@ -33,7 +33,13 @@ MODO_DEBUG     = os.environ.get("MODO_DEBUG", "false").lower() == "true"
 
 TITULOS_IGNORAR = {
     "tarefa sp", "home", "status", "a fazer", "componente", "turmas",
-    "entregar", "tarefas", "atividades", "menu", "inicio", "voltar"
+    "entregar", "tarefas", "atividades", "menu", "inicio", "voltar",
+    "redacao paulista", "provas", "avaliacao diagnostica", "presenca",
+    "boletim e avaliacoes", "agenda", "mensagens", "pesquisa", "perfil",
+    "minhas conquistas", "copa da escola", "configuracoes", "sair da conta",
+    "plataformas de aprendizagem", "materiais digitais", "inscricao aulas olimpicas",
+    "portal de atendimento", "suporte", "ouvidoria", "termos de uso",
+    "politica de privacidade", "sobre"
 }
 
 
@@ -55,8 +61,14 @@ def carregar_variaveis() -> dict:
     return config
 
 
+def _normalizar_titulo(titulo: str) -> str:
+    import unicodedata
+    s = unicodedata.normalize("NFD", titulo.lower())
+    return "".join(c for c in s if unicodedata.category(c) != "Mn")
+
+
 def _e_titulo_valido(titulo: str) -> bool:
-    t = titulo.strip().lower()
+    t = _normalizar_titulo(titulo.strip())
     if len(t) < 4:
         return False
     if t in TITULOS_IGNORAR:
@@ -77,11 +89,54 @@ def _normalizar_url(href: str) -> str:
 
 
 def _e_url_especifica(url: str) -> bool:
-    """Retorna True se a URL for de uma atividade especifica, nao a pagina de listagem."""
     return bool(url) and url.rstrip("/") != URL_TAREFAS.rstrip("/")
 
 
-# --- 2. Login ---
+# --- 2. Aguardar carregamento real da pagina ---
+def aguardar_conteudo_tarefas(page: Page) -> None:
+    """
+    Aguarda a secao de tarefas carregar de verdade, nao apenas o menu de navegacao.
+    O site e uma SPA — o conteudo e injetado via JS apos o menu aparecer.
+    """
+    # Rola a pagina para acionar lazy loading
+    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    page.wait_for_timeout(1000)
+    page.evaluate("window.scrollTo(0, 0)")
+
+    # Tenta esperar por elementos que indicam conteudo real de tarefas
+    # AJUSTE estes seletores se necessario
+    seletores_conteudo = [
+        "[class*='task']",
+        "[class*='tarefa']",
+        "[class*='atividade']",
+        "[class*='card']",
+        "[class*='item']",
+        "main",
+        "section",
+        "article",
+    ]
+    for sel in seletores_conteudo:
+        try:
+            page.wait_for_selector(sel, timeout=5_000)
+            log.info("Elemento de conteudo encontrado: %s", sel)
+            break
+        except PlaywrightTimeout:
+            continue
+
+    # Aguarda estabilizacao do conteudo (espera o texto parar de crescer)
+    page.wait_for_timeout(3000)
+    tamanho_anterior = 0
+    for _ in range(5):
+        tamanho_atual = page.evaluate("document.body.innerText.length")
+        if tamanho_atual == tamanho_anterior and tamanho_atual > 200:
+            break
+        tamanho_anterior = tamanho_atual
+        page.wait_for_timeout(1500)
+
+    log.info("Pagina estabilizada. Tamanho do texto: %d chars", tamanho_anterior)
+
+
+# --- 3. Login ---
 def fazer_login(page: Page, config: dict) -> None:
     log.info("Abrindo pagina de login...")
     page.goto(URL_LOGIN, wait_until="domcontentloaded")
@@ -114,70 +169,58 @@ def fazer_login(page: Page, config: dict) -> None:
         raise RuntimeError("Login falhou: pagina nao redirecionou apos 30s.")
 
 
-# --- 3. Diagnostico da pagina de tarefas ---
+# --- 4. Diagnostico ---
 def diagnosticar_pagina(page: Page, config: dict) -> None:
-    """
-    Modo debug: envia para o Telegram um dump dos links e texto da pagina
-    para ajudar a identificar os seletores corretos.
-    """
-    log.info("[DEBUG] Coletando diagnostico da pagina...")
+    log.info("[DEBUG] Coletando diagnostico...")
 
-    # Todos os links da pagina
     todos_links = page.locator("a[href]").all()
     links_info = []
-    for link in todos_links[:40]:
+    for link in todos_links[:60]:
         try:
             href = link.get_attribute("href") or ""
-            texto = link.inner_text().strip()[:60]
+            texto = link.inner_text().strip()[:80]
             if href and texto:
                 links_info.append(f"  [{texto}] -> {href}")
         except Exception:
             pass
 
-    # Primeiras linhas do corpo
     corpo = page.inner_text("body").strip()
-    primeiras_linhas = "\n".join(
-        [l for l in corpo.split("\n") if l.strip()][:40]
+    linhas_nao_vazias = [l for l in corpo.split("\n") if l.strip()]
+
+    msg1 = (
+        "<b>[DEBUG] Links na pagina de tarefas:</b>\n"
+        + "\n".join(links_info[:30])
+    )
+    msg2 = (
+        "<b>[DEBUG] Texto da pagina (primeiras 80 linhas):</b>\n"
+        + "\n".join(linhas_nao_vazias[:80])
     )
 
-    msg_debug = (
-        "<b>[DEBUG] Links encontrados na pagina de tarefas:</b>\n"
-        + "\n".join(links_info[:25])
-        + "\n\n<b>Primeiras linhas do texto da pagina:</b>\n"
-        + primeiras_linhas[:1500]
-    )
-    enviar_telegram(msg_debug, config)
-    log.info("[DEBUG] Diagnostico enviado ao Telegram.")
+    enviar_telegram(msg1[:TELEGRAM_MAX], config)
+    enviar_telegram(msg2[:TELEGRAM_MAX], config)
+    log.info("[DEBUG] Diagnostico enviado.")
 
 
-# --- 4. Listar atividades pendentes ---
+# --- 5. Listar atividades pendentes ---
 def listar_atividades_pendentes(page: Page) -> list:
     log.info("Acessando pagina de tarefas...")
     page.goto(URL_TAREFAS, wait_until="domcontentloaded")
-
-    try:
-        page.wait_for_function("document.body.innerText.length > 100", timeout=30_000)
-    except PlaywrightTimeout:
-        log.warning("Pagina de tarefas demorou para carregar.")
+    aguardar_conteudo_tarefas(page)
 
     atividades = []
 
-    # Tenta varios seletores, do mais especifico ao mais generico
-    # AJUSTE conforme os hrefs reais do site (use o debug para ver)
     seletores_tentativa = [
         "a[href*='/tarefa/']",
         "a[href*='/atividade/']",
         "a[href*='/task/']",
-        "a[href*='/tarefa']",      # mais amplo: captura /tarefa123 etc
+        "a[href*='/tarefa']",
         "a[href*='/questao/']",
         "a[href*='/exercicio/']",
     ]
 
     links = []
-    seletor_usado = None
     for sel in seletores_tentativa:
         encontrados = page.locator(sel).all()
-        # Filtra links que nao sejam a propria pagina de tarefas
         validos = []
         for l in encontrados:
             try:
@@ -189,8 +232,7 @@ def listar_atividades_pendentes(page: Page) -> list:
                 pass
         if validos:
             links = validos
-            seletor_usado = sel
-            log.info("Seletor '%s' encontrou %d links.", sel, len(links))
+            log.info("Seletor '%s' encontrou %d links especificos.", sel, len(links))
             break
 
     if links:
@@ -226,15 +268,10 @@ def listar_atividades_pendentes(page: Page) -> list:
             except Exception as exc:
                 log.debug("Erro ao processar link: %s", exc)
     else:
-        # Fallback: leitura linha a linha do texto da pagina
         log.info("Nenhum link especifico encontrado. Usando leitura de texto (fallback).")
         corpo = page.inner_text("body")
         linhas = [l.strip() for l in corpo.split("\n") if l.strip()]
-
-        log.info("[FALLBACK] Total de linhas na pagina: %d", len(linhas))
-        if MODO_DEBUG:
-            for idx, linha in enumerate(linhas[:60]):
-                log.info("[FALLBACK] linha[%d]: %r", idx, linha)
+        log.info("Total de linhas no texto: %d", len(linhas))
 
         for i, linha in enumerate(linhas):
             if linha == "A Fazer" and i + 1 < len(linhas):
@@ -254,7 +291,7 @@ def listar_atividades_pendentes(page: Page) -> list:
     return resultado
 
 
-# --- 5. Abrir atividade ---
+# --- 6. Abrir atividade ---
 def abrir_atividade(page: Page, url: str) -> bool:
     if not _e_url_especifica(url):
         return False
@@ -262,6 +299,7 @@ def abrir_atividade(page: Page, url: str) -> bool:
         log.info("Abrindo atividade: %s", url)
         page.goto(url, wait_until="domcontentloaded")
         page.wait_for_function("document.body.innerText.length > 50", timeout=20_000)
+        page.wait_for_timeout(2000)
         return True
     except PlaywrightTimeout:
         log.warning("Timeout ao abrir atividade: %s", url)
@@ -271,7 +309,7 @@ def abrir_atividade(page: Page, url: str) -> bool:
         return False
 
 
-# --- 6. Extrair conteudo ---
+# --- 7. Extrair conteudo ---
 def extrair_conteudo_atividade(page: Page) -> dict:
     conteudo = {
         "titulo": "", "disciplina": "", "prazo": "",
@@ -345,13 +383,13 @@ def extrair_conteudo_atividade(page: Page) -> dict:
     return conteudo
 
 
-# --- 7. Identificador unico ---
+# --- 8. Identificador unico ---
 def gerar_id_atividade(atividade: dict) -> str:
     chave = f"{atividade['titulo']}|{atividade['url']}"
     return hashlib.sha256(chave.encode()).hexdigest()[:16]
 
 
-# --- 8. Estado persistente ---
+# --- 9. Estado persistente ---
 def carregar_estado() -> dict:
     if os.path.exists(ARQUIVO_ESTADO):
         try:
@@ -373,7 +411,7 @@ def gerar_hash_conteudo(conteudo: dict) -> str:
     return hashlib.md5(texto.encode()).hexdigest()
 
 
-# --- 9. Resposta educacional ---
+# --- 10. Resposta educacional ---
 def gerar_resposta_educacional(conteudo: dict, api_key: str) -> dict:
     resultado = {
         "resposta_sugerida": "",
@@ -443,12 +481,12 @@ def gerar_resposta_educacional(conteudo: dict, api_key: str) -> dict:
         log.warning("Erro na API Anthropic: %s", exc)
         resultado["observacao"] = f"Erro ao gerar resposta: {exc}"
     except Exception as exc:
-        log.warning("Erro inesperado na geracao de resposta: %s", exc)
+        log.warning("Erro inesperado: %s", exc)
         resultado["observacao"] = "Erro inesperado ao gerar resposta educacional."
     return resultado
 
 
-# --- 10. Telegram ---
+# --- 11. Telegram ---
 def enviar_telegram(mensagem: str, config: dict) -> None:
     if not config.get("TELEGRAM_TOKEN") or not config.get("TELEGRAM_CHAT_ID"):
         log.warning("Telegram nao configurado.\n%s", mensagem)
@@ -499,7 +537,7 @@ def formatar_mensagem_atividade(atividade: dict, conteudo: dict, resposta: dict)
     return "\n".join(partes)
 
 
-# --- 11. Main ---
+# --- 12. Main ---
 def main():
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
     log.info("=" * 50)
@@ -526,13 +564,9 @@ def main():
                     enviar_telegram(f"Erro critico\n\nFalha no login: {exc}", config)
                     sys.exit(1)
 
-                # Modo debug: envia dump da pagina para o Telegram
                 if MODO_DEBUG:
                     page.goto(URL_TAREFAS, wait_until="domcontentloaded")
-                    try:
-                        page.wait_for_function("document.body.innerText.length > 100", timeout=30_000)
-                    except PlaywrightTimeout:
-                        pass
+                    aguardar_conteudo_tarefas(page)
                     diagnosticar_pagina(page, config)
 
                 try:
