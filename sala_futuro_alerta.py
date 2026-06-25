@@ -10,7 +10,6 @@ import requests
 from playwright.sync_api import sync_playwright
 from datetime import datetime
 
-# Credenciais lidas de variaveis de ambiente (GitHub Secrets)
 RA               = os.environ.get("RA",               "000110134488")
 DIGITO           = os.environ.get("DIGITO",           "x")
 SENHA            = os.environ.get("SENHA",            "mj13112008")
@@ -18,6 +17,16 @@ TELEGRAM_TOKEN   = os.environ.get("TELEGRAM_TOKEN",   "")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
 
 ARQUIVO_ATIVIDADES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atividades_salvas.json")
+
+# Linhas de navegacao para ignorar no conteudo
+NAV_IGNORAR = {
+    "redacao paulista", "avaliacao diagnostica", "materiais digitais",
+    "plataformas de aprendizagem", "boletim e avaliacoes", "minhas conquistas",
+    "copa da escola", "inscricao aulas olimpicas", "configuracoes",
+    "sair da conta", "home", "tarefas", "agenda", "mensagens", "pesquisa",
+    "perfil", "portal de atendimento", "suporte", "sobre", "termos de uso",
+    "politica de privacidade", "central de atendimento", "apps"
+}
 
 
 def carregar_atividades_salvas():
@@ -36,29 +45,22 @@ def fazer_login(page):
     print("  -> Abrindo pagina de login...")
     page.goto("https://saladofuturo.educacao.sp.gov.br/login-alunos", wait_until="domcontentloaded")
     time.sleep(6)
-
     page.get_by_placeholder("Ex.: 186735683").click()
     page.get_by_placeholder("Ex.: 186735683").type(RA)
-
     page.get_by_placeholder("0").first.click()
     page.get_by_placeholder("0").first.type(DIGITO)
-
     page.get_by_placeholder("Digite sua senha").click()
     page.get_by_placeholder("Digite sua senha").type(SENHA)
     time.sleep(1)
-
     page.get_by_role("button", name="Acessar").click()
     time.sleep(5)
     print("  -> Login realizado!")
 
 
 def buscar_atividades(page):
-    """Busca todas as atividades 'A Fazer' na pagina de tarefas."""
     print("  -> Verificando tarefas...")
     page.goto("https://saladofuturo.educacao.sp.gov.br/tarefas", wait_until="domcontentloaded")
     time.sleep(4)
-
-    # Rola a pagina para forcar carregamento de todos os cards (lazy loading)
     for _ in range(3):
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         time.sleep(1)
@@ -67,7 +69,6 @@ def buscar_atividades(page):
 
     corpo = page.inner_text("body")
     linhas = [l.strip() for l in corpo.split("\n") if l.strip()]
-
     print(f"  -> Total de linhas na pagina: {len(linhas)}")
 
     atividades = []
@@ -86,24 +87,15 @@ def buscar_atividades(page):
 
 
 def abrir_atividade(page, nome_atividade):
-    """
-    Clica no card da atividade, depois clica em 'Prosseguir para a tarefa'.
-    Retorna (url_final, conteudo_texto) ou (None, None) se falhar.
-    """
     print(f"  -> Abrindo atividade: {nome_atividade}")
-
-    # Volta para /tarefas
     page.goto("https://saladofuturo.educacao.sp.gov.br/tarefas", wait_until="domcontentloaded")
     time.sleep(3)
-
-    # Rola para carregar todos os cards
     for _ in range(2):
         page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
         time.sleep(1)
     page.evaluate("window.scrollTo(0, 0)")
     time.sleep(1)
 
-    # Clica no card pelo nome da atividade
     clicou = False
     try:
         card = page.get_by_text(nome_atividade, exact=True).first
@@ -111,7 +103,6 @@ def abrir_atividade(page, nome_atividade):
         time.sleep(0.5)
         card.click()
         clicou = True
-        print(f"  -> Card clicado (texto exato)")
         time.sleep(2)
     except Exception as e:
         print(f"  -> Falhou texto exato: {e}")
@@ -120,73 +111,85 @@ def abrir_atividade(page, nome_atividade):
         try:
             card = page.locator(f"text={nome_atividade}").first
             card.scroll_into_view_if_needed()
-            time.sleep(0.5)
             card.click()
             clicou = True
-            print(f"  -> Card clicado (texto parcial)")
             time.sleep(2)
         except Exception as e:
             print(f"  -> Falhou texto parcial: {e}")
             return None, None
 
-    # Procura e clica em "Prosseguir para a tarefa"
-    url_atividade = None
-    conteudo = ""
-
-    # Tenta variacoes do texto do botao
     textos_botao = ["Prosseguir para a tarefa", "Prosseguir", "Acessar tarefa", "Iniciar"]
-    botao_clicado = False
-
     for texto in textos_botao:
         try:
             btn = page.get_by_role("button", name=texto)
             btn.wait_for(state="visible", timeout=5000)
             btn.click()
-            botao_clicado = True
             print(f"  -> Botao '{texto}' clicado!")
             time.sleep(4)
             break
         except Exception:
-            pass
-
-    if not botao_clicado:
-        # Tenta por get_by_text
-        for texto in textos_botao:
             try:
                 btn = page.get_by_text(texto).first
                 btn.wait_for(state="visible", timeout=3000)
                 btn.click()
-                botao_clicado = True
-                print(f"  -> Botao '{texto}' clicado via get_by_text!")
+                print(f"  -> Botao '{texto}' clicado via texto!")
                 time.sleep(4)
                 break
             except Exception:
                 pass
-
-    if not botao_clicado:
+    else:
         print(f"  -> Nenhum botao de prosseguir encontrado.")
         return None, None
 
     url_atividade = page.url
-    conteudo = page.inner_text("body")[:4000]
+    conteudo = page.inner_text("body")
     print(f"  -> URL final: {url_atividade}")
-
     return url_atividade, conteudo
 
 
-def enviar_telegram(mensagem):
-    """Envia mensagem via Telegram Bot API."""
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-        print("  TELEGRAM_TOKEN ou TELEGRAM_CHAT_ID nao configurado.")
-        print(f"  Mensagem que seria enviada:\n{mensagem}")
-        return
+def filtrar_conteudo(texto_bruto):
+    """Remove linhas de navegacao e retorna apenas o conteudo relevante."""
+    linhas = [l.strip() for l in texto_bruto.split("\n") if l.strip()]
+    resultado = []
+    for linha in linhas:
+        linha_lower = linha.lower()
+        # Ignora linhas de navegacao
+        if any(nav in linha_lower for nav in NAV_IGNORAR):
+            continue
+        # Ignora linhas muito curtas (icones, numeros soltos)
+        if len(linha) < 4:
+            continue
+        resultado.append(linha)
+    return resultado
 
+
+def enviar_telegram(mensagem):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print(f"  Telegram nao configurado. Mensagem:\n{mensagem}")
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     resp = requests.post(url, json={"chat_id": TELEGRAM_CHAT_ID, "text": mensagem}, timeout=30)
     if resp.status_code == 200:
         print("  -> Telegram enviado!")
     else:
-        print(f"  Erro ao enviar Telegram: {resp.status_code} - {resp.text}")
+        print(f"  Erro Telegram: {resp.status_code} - {resp.text}")
+
+
+def enviar_telegram_longo(titulo, linhas):
+    """Envia conteudo longo dividido em mensagens de ate 3800 chars."""
+    LIMITE = 3800
+    msg_atual = titulo + "\n\n"
+    
+    for linha in linhas:
+        adicao = linha + "\n"
+        if len(msg_atual) + len(adicao) > LIMITE:
+            enviar_telegram(msg_atual)
+            msg_atual = "(continuacao)\n\n" + adicao
+        else:
+            msg_atual += adicao
+    
+    if msg_atual.strip():
+        enviar_telegram(msg_atual)
 
 
 def main():
@@ -213,18 +216,11 @@ def main():
             fazer_login(page)
             atividades_atuais = buscar_atividades(page)
 
-            # Novas = atividades que ainda nao estao salvas
             novas = [a for a in atividades_atuais if a not in atividades_salvas]
-
-            # Removidas = atividades salvas que sumiram da lista (entregues/expiradas)
-            removidas = [a for a in atividades_salvas if a not in atividades_atuais]
-            if removidas:
-                print(f"  -> {len(removidas)} atividade(s) concluida(s)/removida(s): {removidas}")
 
             if novas:
                 print(f"\n  {len(novas)} NOVA(S) ATIVIDADE(S):")
 
-                # Mensagem resumo
                 resumo = f"Sala do Futuro - {len(novas)} nova(s) atividade(s)!\n\n"
                 for a in novas:
                     resumo += f"- {a}\n"
@@ -232,30 +228,20 @@ def main():
                 resumo += "\nhttps://saladofuturo.educacao.sp.gov.br/tarefas"
                 enviar_telegram(resumo)
 
-                # Entra em cada atividade nova e envia detalhes
                 for nome in novas:
                     print(f"\n  -> Processando: {nome}")
                     url_atv, conteudo_atv = abrir_atividade(page, nome)
 
                     if url_atv and conteudo_atv:
-                        # Filtra linhas com conteudo relevante
-                        linhas_conteudo = [l.strip() for l in conteudo_atv.split("\n")
-                                           if len(l.strip()) > 10]
-                        trecho = "\n".join(linhas_conteudo[:35])
-
-                        mensagem_detalhe = (
-                            f"Atividade: {nome}\n\n"
-                            f"Link: {url_atv}\n\n"
-                            f"--- Conteudo ---\n{trecho[:1800]}"
-                        )
+                        linhas_filtradas = filtrar_conteudo(conteudo_atv)
+                        titulo_msg = f"Atividade: {nome}\nLink: {url_atv}\n\n--- Conteudo ---"
+                        enviar_telegram_longo(titulo_msg, linhas_filtradas)
                     else:
-                        mensagem_detalhe = (
+                        enviar_telegram(
                             f"Atividade: {nome}\n\n"
                             f"Nao foi possivel abrir automaticamente.\n"
                             f"Acesse: https://saladofuturo.educacao.sp.gov.br/tarefas"
                         )
-
-                    enviar_telegram(mensagem_detalhe)
 
             else:
                 print("\n  Nenhuma atividade nova. Tudo em dia!")
@@ -268,7 +254,6 @@ def main():
 
             browser.close()
 
-        # Salva apenas as atividades que ainda estao em aberto
         salvar_atividades(atividades_atuais)
 
     except Exception as erro:
