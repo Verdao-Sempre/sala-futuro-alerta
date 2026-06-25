@@ -20,7 +20,6 @@ GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 
 ARQUIVO_ATIVIDADES = os.path.join(os.path.dirname(os.path.abspath(__file__)), "atividades_salvas.json")
 
-# Linhas de navegacao para ignorar no conteudo
 NAV_IGNORAR = {
     "redacao paulista", "avaliacao diagnostica", "materiais digitais",
     "plataformas de aprendizagem", "boletim e avaliacoes", "minhas conquistas",
@@ -86,9 +85,8 @@ def buscar_atividades(page):
 
     print(f"  -> {len(atividades)} tarefa(s) em aberto: {atividades}")
 
-    # Se nao achou nada, envia debug pelo Telegram
     if len(atividades) == 0:
-        linhas_aFazer = [f"linha {i}: '{linhas[i]}' -> '{linhas[i+1] if i+1<len(linhas) else ''}'" 
+        linhas_aFazer = [f"linha {i}: '{linhas[i]}' -> '{linhas[i+1] if i+1<len(linhas) else ''}'"
                          for i, l in enumerate(linhas) if "fazer" in l.lower() or "tarefa" in l.lower()]
         debug_msg = f"DEBUG: 0 atividades encontradas.\nTotal linhas: {len(linhas)}\n\nLinhas com 'fazer'/'tarefa':\n"
         debug_msg += "\n".join(linhas_aFazer[:20]) or "(nenhuma)"
@@ -160,100 +158,278 @@ def abrir_atividade(page, nome_atividade):
 
 
 def filtrar_conteudo(texto_bruto, nome_atividade=""):
-    """Extrai apenas o conteudo da atividade, do titulo ate o rodape."""
     linhas = [l.strip() for l in texto_bruto.split("\n") if l.strip()]
-    
-    # Marcadores de fim do conteudo util
+
     fim_marcadores = ["voltar", "salvar rascunho", "finalizar", "ouvidoria",
                       "politica de privacidade", "0800-", "tentativas restantes"]
-    
-    # Encontra onde o conteudo da atividade comeca
-    # Procura pelo nome da atividade ou por "Introducao" / primeira questao
+
     inicio = 0
     for i, linha in enumerate(linhas):
         linha_lower = linha.lower()
-        # Inicio quando achar o nome da atividade ou disciplina (ex: "Matematica - 2700")
         if nome_atividade and nome_atividade.lower()[:20] in linha_lower:
             inicio = i
             break
-        # Fallback: começa em "Introducao" ou "Questao 01"
         if "introdução" in linha_lower or "questão 01" in linha_lower or "questao 01" in linha_lower:
             inicio = i
             break
-    
-    # Extrai do inicio ate os marcadores de fim
+
     resultado = []
     for linha in linhas[inicio:]:
         linha_lower = linha.lower()
         if any(m in linha_lower for m in fim_marcadores):
             break
-        # Ignora linhas muito curtas
         if len(linha) < 3:
             continue
         resultado.append(linha)
-    
+
     return resultado
 
 
+# ============================================================
+#  INTEGRACAO COM IA (GROQ)
+# ============================================================
 
-def responder_com_ia(conteudo_atividade, nome_atividade):
-    """Envia o conteudo da atividade para o GPT e retorna SOMENTE as respostas."""
+def chamar_groq(prompt, max_tokens=2048, temperature=0.3):
     if not GROQ_API_KEY:
-        print("  -> GROQ_API_KEY nao configurada!")
-        enviar_telegram("Aviso: GROQ_API_KEY nao configurada no GitHub Secrets.")
+        enviar_telegram("Aviso: GROQ_API_KEY nao configurada.")
         return None
-
-    print(f"  -> Enviando para GPT... (chave: {GROQ_API_KEY[:8]}...)")
-
-    prompt = f"""Voce e um assistente que ajuda estudantes do ensino medio brasileiro.
-Abaixo esta o conteudo de uma atividade escolar. Responda APENAS as questoes, sem repetir o enunciado.
-
-Formato de resposta:
-Q01: [resposta direta - letra ou texto curto]
-Motivo: [explicacao breve em 1-2 linhas]
-
-Q02: [resposta direta]
-Motivo: [explicacao breve]
-
-... e assim por diante para cada questao.
-
-Para questoes de completar lacunas, indique as palavras corretas.
-Para multipla escolha, indique a letra correta.
-Para questao discursiva, escreva resposta modelo em 2-3 linhas.
-Seja objetivo e direto. NAO repita as questoes, apenas as respostas.
-
-CONTEUDO DA ATIVIDADE "{nome_atividade}":
-{conteudo_atividade[:6000]}
-"""
-
     try:
         resp = requests.post(
             "https://api.groq.com/openai/v1/chat/completions",
-            headers={
-                "Authorization": f"Bearer {GROQ_API_KEY}",
-                "Content-Type": "application/json"
-            },
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
             json={
                 "model": "llama-3.1-8b-instant",
-                "max_tokens": 2048,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
                 "messages": [{"role": "user", "content": prompt}]
             },
             timeout=60
         )
-        print(f"  -> GPT status: {resp.status_code}")
         if resp.status_code == 200:
-            resposta = resp.json()["choices"][0]["message"]["content"]
-            print("  -> GPT respondeu!")
-            return resposta
+            return resp.json()["choices"][0]["message"]["content"].strip()
         else:
-            erro = resp.text[:300]
-            print(f"  -> Erro GPT: {resp.status_code} - {erro}")
-            enviar_telegram(f"Erro na API do GPT: {resp.status_code}\n{erro}")
+            print(f"  -> Erro Groq {resp.status_code}: {resp.text[:200]}")
+            enviar_telegram(f"Erro Groq: {resp.status_code}\n{resp.text[:200]}")
             return None
     except Exception as e:
-        print(f"  -> Falha no GPT: {e}")
-        enviar_telegram(f"Falha ao chamar GPT: {e}")
+        print(f"  -> Falha Groq: {e}")
+        enviar_telegram(f"Falha Groq: {e}")
         return None
+
+
+def responder_com_ia(conteudo_atividade, nome_atividade):
+    """Retorna respostas em texto legivel para enviar no Telegram."""
+    print(f"  -> IA (respostas texto)... chave: {GROQ_API_KEY[:8]}...")
+    prompt = f"""Voce e um assistente que ajuda estudantes do ensino medio brasileiro.
+Responda APENAS as questoes, sem repetir o enunciado.
+
+Formato:
+Q01: [letra(s) ou termo correto]
+Motivo: [explicacao breve 1-2 linhas]
+
+Q02: [resposta]
+Motivo: [explicacao]
+
+Para checkbox (multipla escolha), indique TODAS as letras corretas.
+Para dropdown (completar lacunas), indique os termos na ordem.
+Para radio (unica escolha), indique a letra.
+NAO repita as questoes.
+
+CONTEUDO DA ATIVIDADE "{nome_atividade}":
+{conteudo_atividade[:6000]}
+"""
+    resposta = chamar_groq(prompt, max_tokens=2048, temperature=0.3)
+    if resposta:
+        print("  -> IA respondeu (texto)!")
+    return resposta
+
+
+def obter_respostas_json(conteudo_atividade, nome_atividade):
+    """Retorna JSON estruturado para clicar automaticamente."""
+    print(f"  -> IA (JSON para cliques)...")
+    prompt = f"""Analise esta atividade escolar brasileira do ensino medio.
+Retorne SOMENTE JSON valido, sem markdown, sem texto extra:
+
+{{
+  "1": {{"tipo": "multipla_escolha", "respostas": ["B", "D"]}},
+  "2": {{"tipo": "unica_escolha", "respostas": ["C"]}},
+  "3": {{"tipo": "dropdown", "respostas": ["nao vazia", "vazia", "mutuamente excludentes"]}}
+}}
+
+Tipos:
+- multipla_escolha: checkboxes, pode ter varias letras corretas
+- unica_escolha: radio button, so uma letra
+- dropdown: completar lacunas no texto, lista de termos na ordem das lacunas
+
+CONTEUDO "{nome_atividade}":
+{conteudo_atividade[:5000]}
+
+JSON:"""
+
+    resposta = chamar_groq(prompt, max_tokens=1024, temperature=0.1)
+    if not resposta:
+        return None
+
+    try:
+        texto = resposta.strip()
+        if "```" in texto:
+            for parte in texto.split("```"):
+                parte = parte.strip()
+                if parte.startswith("json"):
+                    parte = parte[4:].strip()
+                if parte.startswith("{"):
+                    texto = parte
+                    break
+        resultado = json.loads(texto)
+        print(f"  -> JSON: {resultado}")
+        return resultado
+    except Exception as e:
+        print(f"  -> Erro JSON: {e} | Resposta: {resposta[:200]}")
+        return None
+
+
+# ============================================================
+#  CLICAR NAS RESPOSTAS
+# ============================================================
+
+def clicar_checkbox_radio(page, letra, num_questao):
+    """Clica no checkbox/radio cuja label começa com a letra dada (ex: 'A)', 'B.')"""
+    clicou = page.evaluate("""
+    (letra) => {
+        const inputs = document.querySelectorAll('input[type="checkbox"], input[type="radio"]');
+        for (const inp of inputs) {
+            let el = inp;
+            for (let i = 0; i < 5; i++) {
+                el = el.parentElement;
+                if (!el) break;
+                const texto = (el.innerText || el.textContent || '').trim();
+                const padrao = new RegExp('^' + letra + '[).\\\\s]');
+                if (padrao.test(texto) || texto.startsWith(letra + ')') || texto.startsWith(letra + '.')) {
+                    if (!inp.checked) inp.click();
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+    """, letra.upper())
+
+    if clicou:
+        print(f"    -> Clicou '{letra}' (Q{num_questao})")
+        time.sleep(0.4)
+    else:
+        print(f"    -> Nao achou '{letra}' (Q{num_questao})")
+    return clicou
+
+
+def clicar_dropdown(page, indice, termo):
+    """Abre o dropdown de indice dado e seleciona o termo correto."""
+    try:
+        # Tenta select nativo primeiro
+        selects = page.query_selector_all("select")
+        if indice < len(selects):
+            try:
+                selects[indice].select_option(label=termo)
+                print(f"    -> Select {indice+1}: '{termo}'")
+                time.sleep(0.3)
+                return True
+            except Exception:
+                pass
+
+        # Dropdown customizado React
+        cbs = page.query_selector_all('[role="combobox"], [aria-haspopup="listbox"], button[aria-expanded]')
+        if indice >= len(cbs):
+            print(f"    -> Combobox {indice+1} nao encontrado (total: {len(cbs)})")
+            return False
+
+        cbs[indice].scroll_into_view_if_needed()
+        cbs[indice].click()
+        time.sleep(0.7)
+
+        # Tenta clicar na opcao
+        try:
+            page.get_by_role("option", name=termo).click(timeout=2000)
+            print(f"    -> Dropdown {indice+1}: '{termo}'")
+            time.sleep(0.3)
+            return True
+        except Exception:
+            try:
+                page.locator(f'[role="listbox"] >> text={termo}').first.click(timeout=1500)
+                print(f"    -> Dropdown {indice+1}: '{termo}' (listbox)")
+                time.sleep(0.3)
+                return True
+            except Exception as e2:
+                print(f"    -> Opcao '{termo}' nao encontrada no dropdown {indice+1}: {e2}")
+                page.keyboard.press("Escape")
+                return False
+    except Exception as e:
+        print(f"    -> Erro dropdown {indice+1}: {e}")
+        return False
+
+
+def clicar_respostas_pagina(page, respostas_json):
+    """Clica nas respostas corretas baseado no JSON da IA. Retorna total de cliques."""
+    if not respostas_json:
+        return 0
+
+    page.evaluate("window.scrollTo(0, 0)")
+    time.sleep(0.5)
+    total = 0
+    dropdown_indice = 0  # contador global de dropdowns na pagina
+
+    for num_q_str, dados in sorted(respostas_json.items(), key=lambda x: int(x[0])):
+        num_q = int(num_q_str)
+        tipo = dados.get("tipo", "multipla_escolha")
+        respostas = dados.get("respostas", [])
+
+        print(f"  -> Q{num_q} ({tipo}): {respostas}")
+
+        if tipo in ("multipla_escolha", "unica_escolha"):
+            for letra in respostas:
+                if clicar_checkbox_radio(page, letra, num_q):
+                    total += 1
+
+        elif tipo == "dropdown":
+            for termo in respostas:
+                if clicar_dropdown(page, dropdown_indice, termo):
+                    total += 1
+                dropdown_indice += 1
+
+    return total
+
+
+def salvar_rascunho_pagina(page):
+    """Clica em Salvar Rascunho."""
+    page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+    time.sleep(1)
+
+    tentativas = [
+        lambda: page.get_by_role("button", name="Salvar rascunho"),
+        lambda: page.get_by_role("button", name="Salvar Rascunho"),
+        lambda: page.get_by_text("Salvar rascunho").first,
+        lambda: page.get_by_text("Salvar Rascunho").first,
+        lambda: page.locator("button:has-text('rascunho')").first,
+        lambda: page.locator("button:has-text('Rascunho')").first,
+    ]
+
+    for fn in tentativas:
+        try:
+            btn = fn()
+            if btn.is_visible(timeout=2000):
+                btn.click()
+                print("  -> Rascunho salvo!")
+                time.sleep(2)
+                return True
+        except Exception:
+            pass
+
+    print("  -> Botao Salvar Rascunho nao encontrado")
+    return False
+
+
+# ============================================================
+#  TELEGRAM
+# ============================================================
 
 def enviar_telegram(mensagem):
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
@@ -268,10 +444,8 @@ def enviar_telegram(mensagem):
 
 
 def enviar_telegram_longo(titulo, linhas):
-    """Envia conteudo longo dividido em mensagens de ate 3800 chars."""
     LIMITE = 3800
     msg_atual = titulo + "\n\n"
-    
     for linha in linhas:
         adicao = linha + "\n"
         if len(msg_atual) + len(adicao) > LIMITE:
@@ -279,10 +453,13 @@ def enviar_telegram_longo(titulo, linhas):
             msg_atual = "(continuacao)\n\n" + adicao
         else:
             msg_atual += adicao
-    
     if msg_atual.strip():
         enviar_telegram(msg_atual)
 
+
+# ============================================================
+#  MAIN
+# ============================================================
 
 def main():
     agora = datetime.now().strftime("%d/%m/%Y %H:%M")
@@ -328,16 +505,35 @@ def main():
                         linhas_filtradas = filtrar_conteudo(conteudo_atv, nome)
                         conteudo_limpo = "\n".join(linhas_filtradas)
 
-                        # Tenta obter resposta da IA
+                        # Passo 1: JSON de respostas para clicar
+                        respostas_json = obter_respostas_json(conteudo_limpo, nome)
+
+                        cliques = 0
+                        rascunho_salvo = False
+
+                        if respostas_json:
+                            time.sleep(2)
+                            cliques = clicar_respostas_pagina(page, respostas_json)
+                            if cliques > 0:
+                                rascunho_salvo = salvar_rascunho_pagina(page)
+
+                        # Passo 2: Respostas em texto para Telegram
                         resposta_ia = responder_com_ia(conteudo_limpo, nome)
 
+                        # Status do auto-responder
+                        if cliques > 0:
+                            status = f"\n\nRespondido automaticamente: {cliques} questao(oes)"
+                            status += " | Rascunho salvo!" if rascunho_salvo else " | (salve o rascunho manualmente)"
+                        else:
+                            status = "\n\n(Auto-responder nao clicou — confira manualmente)"
+
                         if resposta_ia:
-                            cabecalho = f"Atividade: {nome}\nLink: {url_atv}\n\n--- Respostas do GPT ---\n"
-                            enviar_telegram_longo(cabecalho, resposta_ia.split("\n"))
+                            cab = f"Atividade: {nome}\nLink: {url_atv}{status}\n\n--- Respostas ---\n"
+                            enviar_telegram_longo(cab, resposta_ia.split("\n"))
                         else:
                             enviar_telegram(
-                                f"Atividade: {nome}\nLink: {url_atv}\n\n"
-                                f"(GPT nao respondeu — acesse o link para ver as questoes)"
+                                f"Atividade: {nome}\nLink: {url_atv}{status}\n\n"
+                                f"(Acesse o link para confirmar)"
                             )
                     else:
                         enviar_telegram(
