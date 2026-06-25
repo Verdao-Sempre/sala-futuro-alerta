@@ -299,19 +299,32 @@ JSON:"""
 #  CLICAR NAS RESPOSTAS
 # ============================================================
 
-def clicar_checkbox_radio(page, letra, num_questao):
-    """Clica no checkbox/radio cuja label começa com a letra dada (ex: 'A)', 'B.')"""
+def clicar_checkbox_radio(page, letra_ou_texto, num_questao):
+    """Clica no checkbox/radio. Aceita letra (A/B/C) ou texto (Certo/Errado)."""
+    termo = letra_ou_texto.strip()
+    termo_norm = _norm(termo)
     clicou = page.evaluate("""
-    (letra) => {
+    ([termo, termoNorm]) => {
+        function norm(s) {
+            return s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        }
         const inputs = document.querySelectorAll('input[type="checkbox"], input[type="radio"]');
         for (const inp of inputs) {
             let el = inp;
             for (let i = 0; i < 5; i++) {
                 el = el.parentElement;
                 if (!el) break;
-                const texto = (el.innerText || el.textContent || '').trim();
-                const padrao = new RegExp('^' + letra + '[).\\\\s]');
-                if (padrao.test(texto) || texto.startsWith(letra + ')') || texto.startsWith(letra + '.')) {
+                const texto = (el.innerText || el.textContent || \'\').trim();
+                if (!texto) continue;
+                const tn = norm(texto);
+                // 1) Como letra: A), A., A<espaco>
+                const padrao = new RegExp(\'^\' + termo + \'[).\\\\s]\');
+                if (padrao.test(texto) || texto.startsWith(termo + \')\') || texto.startsWith(termo + \'.\')) {
+                    if (!inp.checked) inp.click();
+                    return true;
+                }
+                // 2) Por texto (ex: "Certo", "Errado")
+                if (tn === termoNorm || tn.startsWith(termoNorm + \' \') || tn.startsWith(termoNorm + \')\')) {
                     if (!inp.checked) inp.click();
                     return true;
                 }
@@ -319,15 +332,14 @@ def clicar_checkbox_radio(page, letra, num_questao):
         }
         return false;
     }
-    """, letra.upper())
+    """, [termo, termo_norm])
 
     if clicou:
-        print(f"    -> Clicou '{letra}' (Q{num_questao})")
+        print(f"    -> Clicou '{letra_ou_texto}' (Q{num_questao})")
         time.sleep(0.4)
     else:
-        print(f"    -> Nao achou '{letra}' (Q{num_questao})")
+        print(f"    -> Nao achou '{letra_ou_texto}' (Q{num_questao})")
     return clicou
-
 
 def _norm(s):
     """Remove acentos e normaliza para comparacao flexivel."""
@@ -366,11 +378,30 @@ def clicar_dropdown(page, indice, termo):
             print(f"    -> Combobox {indice+1} nao encontrado (total: {len(cbs)})")
             return False
 
-        cbs[indice].scroll_into_view_if_needed()
-        cbs[indice].click()
-        time.sleep(1.0)  # aguarda animacao do dropdown
+        cb = cbs[indice]
+        cb.scroll_into_view_if_needed()
+        time.sleep(0.5)
+        cb.click()
+        time.sleep(1.5)  # aguarda animacao do dropdown
 
-        # 3) JS: percorre TODOS os elementos visiveis buscando o texto com matching flexivel
+        # Debug: ver quais opcoes aparecem
+        debug_ops = page.evaluate("""
+        () => {
+            const sels = ['[role="option"]', '.MuiMenuItem-root', 'li[data-value]',
+                          '[class*="MenuItem"]', '[class*="option"]'];
+            for (const s of sels) {
+                const els = Array.from(document.querySelectorAll(s))
+                    .filter(e => e.offsetWidth > 0 || e.offsetHeight > 0);
+                if (els.length > 0) {
+                    return els.slice(0,5).map(e=>(e.innerText||e.textContent||'').trim()).join(' | ');
+                }
+            }
+            return 'nenhuma';
+        }
+        """)
+        print(f"    -> Opcoes: {debug_ops[:120]}")
+
+        # 3) JS: percorre TODOS os elementos visiveis buscando o texto
         clicou = page.evaluate("""
         (termoNorm) => {
             function norm(s) {
@@ -378,7 +409,6 @@ def clicar_dropdown(page, indice, termo):
                     .normalize("NFD")
                     .replace(/[\u0300-\u036f]/g, "");
             }
-            // Seletores em ordem de especificidade para componentes React/MUI
             const seletores = [
                 '[role="option"]',
                 '.MuiMenuItem-root',
@@ -395,7 +425,8 @@ def clicar_dropdown(page, indice, termo):
             for (const sel of seletores) {
                 const els = Array.from(document.querySelectorAll(sel));
                 for (const el of els) {
-                    if (el.offsetParent === null) continue;
+                    // Usa offsetWidth/Height em vez de offsetParent para detectar visibilidade
+                    if (el.offsetWidth === 0 && el.offsetHeight === 0) continue;
                     const texto = (el.innerText || el.textContent || "").trim();
                     if (!texto) continue;
                     const tn = norm(texto);
