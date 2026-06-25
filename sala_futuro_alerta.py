@@ -74,11 +74,15 @@ def buscar_atividades(page):
     print(f"  -> Total de linhas na pagina: {len(linhas)}")
 
     atividades = []
+    # Todos os status possiveis de tarefas em aberto
+    STATUS_ABERTO = {"A Fazer", "Rascunho", "Em andamento", "Em Andamento",
+                     "Em progresso", "Em Progresso", "Iniciado", "Iniciada"}
     palavras_ignorar = ["Entregar", " dia", "2025", "2026", "Tarefa SP",
-                        "Home", "Status", "A Fazer", "Componente", "Turmas"]
+                        "Home", "Status", "A Fazer", "Rascunho", "Componente", "Turmas",
+                        "Em andamento", "Em Andamento", "Em progresso"]
 
     for i, linha in enumerate(linhas):
-        if linha in ("A Fazer", "Rascunho"):
+        if linha in STATUS_ABERTO:
             # Procura o nome nas proximas 3 linhas (ignora linhas curtas/numericas)
             for j in range(i + 1, min(i + 4, len(linhas))):
                 nome = linhas[j]
@@ -93,12 +97,10 @@ def buscar_atividades(page):
     print(f"  -> {len(atividades)} tarefa(s) em aberto: {atividades}")
 
     if len(atividades) == 0:
-        linhas_aFazer = [f"linha {i}: '{linhas[i]}' -> '{linhas[i+1] if i+1<len(linhas) else ''}'"
-                         for i, l in enumerate(linhas) if "fazer" in l.lower() or "tarefa" in l.lower()]
-        debug_msg = f"DEBUG: 0 atividades encontradas.\nTotal linhas: {len(linhas)}\n\nLinhas com 'fazer'/'tarefa':\n"
-        debug_msg += "\n".join(linhas_aFazer[:20]) or "(nenhuma)"
-        debug_msg += "\n\nPrimeiras 30 linhas:\n" + "\n".join(linhas[:30])
-        enviar_telegram(debug_msg)
+        # Mostra TODAS as linhas para diagnostico
+        todas = "\n".join([f"{i:02d}: {linhas[i]}" for i in range(len(linhas))])
+        debug_msg = f"DEBUG: 0 atividades.\nTotal linhas: {len(linhas)}\n\n{todas}"
+        enviar_telegram_longo("", debug_msg.split("\n"))
 
     return atividades
 
