@@ -97,7 +97,10 @@ def buscar_atividades(page):
     print(f"  -> {len(atividades)} tarefa(s) em aberto: {atividades}")
 
     if len(atividades) == 0:
-        # Mostra TODAS as linhas para diagnostico
+        # Imprime TODAS as linhas no log E envia pro Telegram
+        print(f"  -> DEBUG: todas as {len(linhas)} linhas da pagina:")
+        for i, l in enumerate(linhas):
+            print(f"    {i:02d}: {repr(l)}")
         todas = "\n".join([f"{i:02d}: {linhas[i]}" for i in range(len(linhas))])
         debug_msg = f"DEBUG: 0 atividades.\nTotal linhas: {len(linhas)}\n\n{todas}"
         enviar_telegram_longo("", debug_msg.split("\n"))
