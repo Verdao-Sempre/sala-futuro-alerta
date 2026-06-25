@@ -279,18 +279,19 @@ def obter_respostas_json(conteudo_atividade, nome_atividade, opcoes_dropdowns=No
         opcoes_info += "\n"
 
     prompt = f"""Analise esta atividade escolar brasileira do ensino medio.
-Retorne SOMENTE JSON valido, sem markdown, sem texto extra:
+Retorne SOMENTE JSON valido, sem markdown, sem texto extra.
 
+REGRAS OBRIGATORIAS:
+- multipla_escolha: respostas sao APENAS letras maiusculas (A, B, C, D, E). Nunca use textos.
+- unica_escolha: resposta e APENAS uma letra maiuscula (A, B, C, D, E). Nunca use textos.
+- dropdown: use EXATAMENTE um dos textos listados nas "OPCOES DOS DROPDOWNS" abaixo.
+
+Exemplo de formato:
 {{
   "1": {{"tipo": "multipla_escolha", "respostas": ["B", "D"]}},
   "2": {{"tipo": "unica_escolha", "respostas": ["C"]}},
-  "3": {{"tipo": "dropdown", "respostas": ["termo exato da opcao 1", "termo exato da opcao 2"]}}
+  "3": {{"tipo": "dropdown", "respostas": ["termo1", "termo2", "termo3"]}}
 }}
-
-Tipos:
-- multipla_escolha: checkboxes, pode ter varias letras corretas
-- unica_escolha: radio button, so uma letra
-- dropdown: preencher lacunas - use EXATAMENTE os termos das opcoes listadas abaixo
 
 {opcoes_info}CONTEUDO "{nome_atividade}":
 {conteudo_atividade[:3000]}
